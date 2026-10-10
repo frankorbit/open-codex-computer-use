@@ -29,11 +29,12 @@ private func normalizedElementIndexNumber(_ value: Double) -> String? {
         return nil
     }
 
-    guard value >= Double(Int.min), value <= Double(Int.max) else {
+    // Double(Int.max) 会向上舍入，必须使用可失败转换避免边界溢出。
+    guard let integer = Int(exactly: value) else {
         return nil
     }
 
-    return String(Int(value))
+    return String(integer)
 }
 
 public final class ComputerUseToolDispatcher {
@@ -60,6 +61,8 @@ public final class ComputerUseToolDispatcher {
                 ),
                 windowPlacement: try parseWindowPlacement(optionalString("window_placement", in: arguments))
             )
+        case "hover":
+            return try service.hover(app: requireString("app", in: arguments), arguments: arguments)
         case "click":
             return try service.click(
                 app: requireString("app", in: arguments),

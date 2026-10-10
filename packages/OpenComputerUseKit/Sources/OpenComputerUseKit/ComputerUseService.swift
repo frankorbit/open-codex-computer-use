@@ -522,6 +522,78 @@ public final class ComputerUseService {
         return snapshotResult(for: try refreshSnapshot(for: query), style: .actionResult)
     }
 
+    public func hover(app query: String, arguments: [String: Any]) throws -> ToolCallResult {
+        guard foregroundHoverEnabled(environment: ProcessInfo.processInfo.environment) else {
+            throw ComputerUseError.unsupportedTool("hover")
+        }
+        let request = try HoverRequest(arguments: arguments)
+        let snapshot = try currentSnapshot(for: query)
+        do {
+            let target = try hoverTarget(request, snapshot: snapshot)
+            let point = target.point
+            return try dispatchForegroundHover(
+                validateTarget: {
+                    try target.validate()
+                    try InputSimulation.requireReleasedMouseButtons()
+                    try self.validateCoordinateSnapshot(at: point, snapshot: snapshot, identityOnly: true)
+                },
+                prepare: {
+                    guard let window = snapshot.windowElement else {
+                        throw ComputerUseError.stateUnavailable("Snapshot window is unavailable; observe again")
+                    }
+                    try InputSimulation.prepareWindowForForegroundClick(snapshot.app, window: window)
+                },
+                validateReceiver: {
+                    guard let window = snapshot.windowElement,
+                          InputSimulation.isForegroundWindow(snapshot.app, window: window) else {
+                        throw ComputerUseError.stateUnavailable("Foreground window changed; observe again")
+                    }
+                    try target.validate()
+                    try self.validateCoordinateSnapshot(at: point, snapshot: snapshot, requireUnoccludedPoint: true)
+                },
+                submit: {
+                    try InputDiagnostics.input(route: .global, point: point) {
+                        try InputSimulation.movePointerForHover(at: inputEventPoint(fromScreenStatePoint: point))
+                    }
+                },
+                dwell: { Thread.sleep(forTimeInterval: Double(request.durationMilliseconds) / 1000) },
+                readBack: {
+                    // hover 总是回读，不能受普通动作的 read-back 开关影响。
+                    self.snapshotResult(for: try self.refreshSnapshot(for: query), style: .actionResult)
+                }
+            )
+        } catch {
+            snapshotCache.invalidate(query: query, resolvedApp: snapshot.app)
+            LiveWindowPreview.invalidate()
+            throw error
+        }
+    }
+
+    private func hoverTarget(
+        _ request: HoverRequest, snapshot: AppSnapshot
+    ) throws -> (point: CGPoint, validate: () throws -> Void) {
+        switch request.target {
+        case let .element(index):
+            let record = try lookupElement(snapshot: snapshot, index: index)
+            guard let center = try globalPoint(for: record, snapshot: snapshot),
+                  let element = record.element else {
+                throw ComputerUseError.stateUnavailable("Hover element has no actionable frame; observe again")
+            }
+            // 编号来自已交付快照；激活前后均拒绝已迁移或消失的控件。
+            return (center, {
+                guard self.elementBelongsToSnapshotWindow(element, snapshot: snapshot) == true,
+                      self.localFrame(of: element, windowBounds: snapshot.windowBounds) == record.localFrame else {
+                    throw ComputerUseError.stateUnavailable("Hover element changed; observe again")
+                }
+            })
+        case let .coordinates(x, y):
+            guard snapshot.screenshotData != nil else {
+                throw ComputerUseError.stateUnavailable("Coordinate hover requires a delivered screenshot")
+            }
+            return (try screenshotToGlobalPoint(snapshot: snapshot, x: x, y: y), {})
+        }
+    }
+
     public func listApps() -> ToolCallResult {
         ToolCallResult.text(
             AppDiscovery.listCatalog()

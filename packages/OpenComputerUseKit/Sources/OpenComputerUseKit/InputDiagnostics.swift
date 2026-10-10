@@ -43,11 +43,11 @@ enum InputDiagnostics {
         }
     }
 
-    static func result(_ body: () throws -> ToolCallResult) -> [String: Any] {
+    static func result(tool: String = "click", _ body: () throws -> ToolCallResult) -> [String: Any] {
         let id = UUID().uuidString
         return $operationID.withValue(id) {
             let start = ProcessInfo.processInfo.systemUptime
-            event("click_started")
+            event("\(tool)_started")
             let result: ToolCallResult
             do {
                 result = try body()
@@ -59,9 +59,9 @@ enum InputDiagnostics {
             var output = result.asDictionary
             let status = output["isError"] as? Bool == true ? "failed" : "returned"
             // returned 只表示函数返回；不能把它当作目标 App 已消费事件的证据。
-            event("click_finished", ["status": status, "duration_ms": String((ProcessInfo.processInfo.systemUptime - start) * 1000)])
+            event("\(tool)_finished", ["status": status, "duration_ms": String((ProcessInfo.processInfo.systemUptime - start) * 1000)])
             var metadata = output["_meta"] as? [String: Any] ?? [:]
-            metadata["ocuDiagnostic"] = ["id": id, "tool": "click", "status": status]
+            metadata["ocuDiagnostic"] = ["id": id, "tool": tool, "status": status]
             output["_meta"] = metadata
             return output
         }

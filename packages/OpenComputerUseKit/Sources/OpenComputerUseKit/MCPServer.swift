@@ -81,14 +81,14 @@ public final class StdioMCPServer {
                 return try encodeJSONRPCResult(
                     id: id,
                     result: [
-                        "tools": ToolDefinitions.all.map(\.asDictionary),
+                        "tools": ToolDefinitions.available().map(\.asDictionary),
                     ]
                 )
             case "tools/call":
                 let name = params["name"] as? String ?? ""
                 let arguments = params["arguments"] as? [String: Any] ?? [:]
-                if name == "click" {
-                    return try encodeJSONRPCResult(id: id, result: InputDiagnostics.result {
+                if name == "click" || name == "hover" {
+                    return try encodeJSONRPCResult(id: id, result: InputDiagnostics.result(tool: name) {
                         try dispatcher.callTool(name: name, arguments: arguments)
                     })
                 }
