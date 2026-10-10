@@ -490,7 +490,16 @@ public final class ComputerUseService {
     // for the duration of each request.
     private var actionReadBack: Bool { actionReadBackEnabled(environment: ProcessInfo.processInfo.environment) }
 
-    public init() {}
+    private let coordinateClickBackend: CoordinateClickBackend?
+
+    public init() {
+        coordinateClickBackend = nil
+    }
+
+    init(snapshots: [String: AppSnapshot], coordinateClickBackend: CoordinateClickBackend) {
+        snapshotsByApp = snapshots
+        self.coordinateClickBackend = coordinateClickBackend
+    }
 
     /// An action's result reads the window back, so the app gets a beat to redraw
     /// first. Without read-back nothing is read, so there is no wait.
@@ -680,31 +689,13 @@ public final class ComputerUseService {
             do {
                 switch clickMethod {
                 case .auto:
-                    let candidates = try clickCandidates(at: point, in: snapshot)
-                    var handled = false
-                    for record in candidates {
-                        if try performAXClickSequence(
-                            on: record,
-                            snapshot: snapshot,
-                            button: button,
-                            clickCount: clickCount,
-                            includeNearbyHitTesting: false,
-                            allowActivationFallback: false
-                        ) {
-                            handled = true
-                            break
-                        }
-                    }
-
-                    if !handled {
-                        try performNonAXClickFallback(
-                            at: targetPoint,
-                            button: button,
-                            clickCount: clickCount,
-                            targetDescription: "x=\(Int(screenshotPoint.x)) y=\(Int(screenshotPoint.y))",
-                            snapshot: snapshot
-                        )
-                    }
+                    try performCoordinateClick(
+                        at: point,
+                        globalPoint: targetPoint,
+                        snapshot: snapshot,
+                        button: button,
+                        clickCount: clickCount
+                    )
                 case .accessibility:
                     throw ComputerUseError.message("click_method 'accessibility' requires element_index")
                 case .appPost, .skyClick, .global:
@@ -1035,22 +1026,68 @@ public final class ComputerUseService {
         return false
     }
 
-    private func clickCandidates(at point: CGPoint, in snapshot: AppSnapshot) throws -> [ElementRecord] {
-        var candidates: [ElementRecord] = []
+    private func performCoordinateClick(
+        at windowPoint: CGPoint,
+        globalPoint: CGPoint,
+        snapshot: AppSnapshot,
+        button: MouseButtonKind,
+        clickCount: Int
+    ) throws {
+        let backend = coordinateClickBackend ?? liveCoordinateClickBackend()
+        let hit = try backend.hitTest(globalPoint, snapshot)
+        try dispatchCoordinateClick(
+            at: windowPoint,
+            target: hit?.target,
+            button: button,
+            clickCount: clickCount,
+            performAX: { action in
+                guard let hit else {
+                    throw ComputerUseError.stateUnavailable("Coordinate hit target is unavailable; observe again")
+                }
+                return try hit.performAX(action)
+            },
+            performMouse: { try backend.performMouse(globalPoint, button, clickCount, snapshot) }
+        )
+    }
 
-        if let bestRecord = bestElement(containing: point, in: snapshot) {
-            candidates.append(bestRecord)
-        }
-
-        if let hitRecord = try hitTestElement(at: point, in: snapshot) {
-            candidates.append(hitRecord)
-        }
-
-        return candidates.reduce(into: []) { uniqueCandidates, candidate in
-            if !uniqueCandidates.contains(where: { sameElement($0.element, candidate.element) }) {
-                uniqueCandidates.append(candidate)
+    private func liveCoordinateClickBackend() -> CoordinateClickBackend {
+        // 闭包仅在本次同步调用存活，不存回 service，避免形成持有环。
+        CoordinateClickBackend(
+            hitTest: { globalPoint, snapshot in
+                guard let record = try self.hitTestElement(atGlobalPoint: globalPoint, in: snapshot),
+                      let element = record.element else { return nil }
+                return CoordinateClickHit(
+                    target: CoordinateClickTarget(
+                        role: record.role,
+                        frame: record.localFrame,
+                        actions: record.rawActions,
+                        belongsToWindow: self.elementBelongsToSnapshotWindow(element, snapshot: snapshot)
+                    ),
+                    performAX: { action in
+                        self.debugClickDecision("requested=auto executed=coordinate_ax action=\(action)")
+                        return AXUIElementPerformAction(element, action as CFString)
+                    }
+                )
+            },
+            performMouse: { point, button, clickCount, snapshot in
+                self.debugClickDecision("requested=auto executed=coordinate_mouse")
+                try self.performNonAXClickFallback(
+                    at: point, button: button, clickCount: clickCount,
+                    targetDescription: "coordinate", snapshot: snapshot
+                )
             }
-        }
+        )
+    }
+
+    private func elementBelongsToSnapshotWindow(_ element: AXUIElement?, snapshot: AppSnapshot) -> Bool {
+        guard let element, let window = snapshot.windowElement else { return false }
+        var pid: pid_t = 0
+        guard AXUIElementGetPid(element, &pid) == .success, pid == snapshot.app.pid else { return false }
+        if CFEqual(element, window) { return true }
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXWindowAttribute as CFString, &value) == .success,
+              let value, CFGetTypeID(value) == AXUIElementGetTypeID() else { return false }
+        return CFEqual(value, window)
     }
 
     private func sameElement(_ lhs: AXUIElement?, _ rhs: AXUIElement?) -> Bool {
@@ -1140,7 +1177,7 @@ public final class ComputerUseService {
 
             if includeNearbyHitTesting {
                 for localPoint in clickActionPoints(for: record, snapshot: snapshot) {
-                    guard let hitRecord = try hitTestElement(at: localPoint, in: snapshot) ?? bestElement(containing: localPoint, in: snapshot) else {
+                    guard let hitRecord = try hitTestElement(atWindowPoint: localPoint, in: snapshot) ?? bestElement(containing: localPoint, in: snapshot) else {
                         continue
                     }
 
@@ -1277,9 +1314,12 @@ public final class ComputerUseService {
             .first
     }
 
-    private func hitTestElement(at point: CGPoint, in snapshot: AppSnapshot) throws -> ElementRecord? {
+    private func hitTestElement(atWindowPoint point: CGPoint, in snapshot: AppSnapshot) throws -> ElementRecord? {
+        try hitTestElement(atGlobalPoint: windowPointToGlobalPoint(snapshot: snapshot, point: point), in: snapshot)
+    }
+
+    private func hitTestElement(atGlobalPoint globalPoint: CGPoint, in snapshot: AppSnapshot) throws -> ElementRecord? {
         let appElement = AXUIElementCreateApplication(snapshot.app.pid)
-        let globalPoint = try screenshotToGlobalPoint(snapshot: snapshot, x: Double(point.x), y: Double(point.y))
         var hitElement: AXUIElement?
         let result = AXUIElementCopyElementAtPosition(appElement, Float(globalPoint.x), Float(globalPoint.y), &hitElement)
         guard result == .success, let hitElement else {
@@ -1292,6 +1332,7 @@ public final class ComputerUseService {
             identifier: nil,
             element: hitElement,
             localFrame: localFrame(of: hitElement, windowBounds: snapshot.windowBounds),
+            role: stringValue(of: hitElement, attribute: kAXRoleAttribute),
             rawActions: rawActions,
             prettyActions: rawActions
         )
@@ -1797,7 +1838,7 @@ public final class ComputerUseService {
             throw ComputerUseError.stateUnavailable("No window bounds are available for \(appReference). Run get_app_state after bringing the app on screen.")
         }
 
-        return CGPoint(x: windowBounds.minX + point.x, y: windowBounds.minY + point.y)
+        return globalPointFromWindowPoint(point, windowBounds: windowBounds)
     }
 
     private func fixtureIdentifier(at point: CGPoint, snapshot: AppSnapshot) throws -> String {

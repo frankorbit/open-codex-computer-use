@@ -175,3 +175,9 @@
 macOS screenshot 在每轮捕获读取用户 JSON 配置，优先级为 ENV > 文件 > 默认值。npm launcher 提供 `ocu config` 查看、set、reset 和 path；支持 PNG/JPG/WebP、JPEG 质量、最大长边/超限缩小策略、最小总像素数丢弃与 SCK 超时，保留 hardware capture 优先路径。app-agent 按请求转发解析后的配置路径并清除未提供的 image 环境，防止常驻值污染。见[中文配置说明](configuration.zh-CN.md)与[English](configuration.md)。
 
 截图像素丢弃门槛按 width×height 计算，低于（不含等于）门槛不返回 image，但保留 AX 和原因；配置省略截图后拒绝坐标输入。WebP 无损编码通过固定版本 libwebp 静态链接，随 app/npm 制品带上许可文本。
+
+## Fork 的坐标点击修正
+
+macOS 坐标 `auto` 点击只对实时命中、属于当前窗口且包含点击点的直接控件执行 AXPress（右键为 AXShowMenu）。不会搜索根窗口的可点击后代，也不会选择祖先列表项。无匹配 AX 动作时沿现有鼠标路径执行；AX 已发出后失败要求重新观察，不追加鼠标事件。元素索引点击和显式点击方法保持原行为。hit test 使用窗口局部坐标加窗口原点，截图缩放仅发生一次。
+
+相关回归位于 `CoordinateClickTests.swift`；真实第三方 App 的命中结果和鼠标投递效果仍需 GUI 验收。
