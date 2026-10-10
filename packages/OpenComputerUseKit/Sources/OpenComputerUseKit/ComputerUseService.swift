@@ -581,6 +581,14 @@ public final class ComputerUseService {
 
         let snapshot = try currentSnapshot(for: query)
         let button = MouseButtonKind(rawValue: mouseButton.lowercased()) ?? .left
+        InputDiagnostics.event("click_target", [
+            "requested_method": clickMethod.rawValue, "target_pid": String(snapshot.app.pid),
+            "window_id": snapshot.targetWindowID.map(String.init) ?? "unknown",
+            "window_bounds": InputDiagnostics.bounds(snapshot.windowBounds),
+            "target_kind": elementIndex == nil ? "coordinate" : "element", "button": button.rawValue,
+            "click_count": String(clickCount),
+            "foreground_pid": NSWorkspace.shared.frontmostApplication.map { String($0.processIdentifier) } ?? "unknown",
+        ])
         if snapshot.mode == .fixture {
             guard clickMethod == .auto else {
                 throw ComputerUseError.message(
@@ -678,6 +686,12 @@ public final class ComputerUseService {
             let screenshotPoint = CGPoint(x: x, y: y)
             let point = try screenshotPixelToWindowPointInSnapshot(snapshot: snapshot, point: screenshotPoint)
             let targetPoint = try windowPointToGlobalPoint(snapshot: snapshot, point: point)
+            let pixelSize = screenshotPixelSize(snapshot: snapshot)
+            InputDiagnostics.event("coordinate_mapping", [
+                "screenshot_point": InputDiagnostics.point(screenshotPoint),
+                "screenshot_size": pixelSize.map { "\($0.width),\($0.height)" } ?? "unknown",
+                "window_point": InputDiagnostics.point(point), "screen_point": InputDiagnostics.point(targetPoint),
+            ])
             let cursorTarget = makeVisualCursorTarget(
                 at: targetPoint,
                 targetWindowID: snapshot.targetWindowID,
@@ -1036,6 +1050,12 @@ public final class ComputerUseService {
         let backend = coordinateClickBackend ?? liveCoordinateClickBackend()
         try backend.validateWindow(globalPoint, snapshot)
         let hit = try backend.hitTest(globalPoint, snapshot)
+        InputDiagnostics.event("coordinate_hit", [
+            "found": String(hit != nil), "window_match": hit?.target.belongsToWindow.map(String.init) ?? "unknown",
+            "frame": InputDiagnostics.bounds(hit?.target.frame),
+            "supports_press": String(hit?.target.actions.contains(kAXPressAction) == true),
+            "supports_menu": String(hit?.target.actions.contains(kAXShowMenuAction) == true),
+        ])
         try dispatchCoordinateClick(
             at: windowPoint,
             target: hit?.target,
@@ -1070,7 +1090,10 @@ public final class ComputerUseService {
                     ),
                     performAX: { action in
                         self.debugClickDecision("requested=auto executed=coordinate_ax action=\(action)")
-                        return AXUIElementPerformAction(element, action as CFString)
+                        InputDiagnostics.event("input_attempt", ["route": "coordinate_ax", "action": action == kAXPressAction ? "press" : "show_menu"])
+                        let result = AXUIElementPerformAction(element, action as CFString)
+                        InputDiagnostics.event("input_returned", ["route": "coordinate_ax", "ax_result": String(result.rawValue)])
+                        return result
                     }
                 )
             },
@@ -1079,6 +1102,7 @@ public final class ComputerUseService {
                     button: button, clickCount: clickCount,
                     globalEnabled: globalPointerFallbacksEnabled(environment: ProcessInfo.processInfo.environment)
                 )
+                InputDiagnostics.event("mouse_route_selected", ["route": method.rawValue])
                 if method == .global || method == .appPost {
                     try self.validateCoordinateSnapshot(at: point, snapshot: snapshot, requireUnoccludedPoint: true)
                 }
@@ -2089,12 +2113,11 @@ public final class ComputerUseService {
         switch method {
         case .appPost:
             debugClickDecision("requested=app_post executed=pid_post target=\(targetDescription)")
-            try InputSimulation.clickTargeted(
-                at: eventPoint,
-                button: button,
-                clickCount: clickCount,
-                pid: snapshot.app.pid
-            )
+            try InputDiagnostics.input(route: method, point: eventPoint) {
+                try InputSimulation.clickTargeted(
+                    at: eventPoint, button: button, clickCount: clickCount, pid: snapshot.app.pid
+                )
+            }
         case .skyClick:
             guard let windowBounds = snapshot.windowBounds, let windowID = snapshot.targetWindowID else {
                 throw ComputerUseError.stateUnavailable(
@@ -2102,14 +2125,12 @@ public final class ComputerUseService {
                 )
             }
             debugClickDecision("requested=sky_click executed=skylight_pid_post target=\(targetDescription)")
-            try InputSimulation.clickWithSkyLight(
-                at: eventPoint,
-                windowPoint: windowPoint,
-                windowBounds: windowBounds,
-                windowID: windowID,
-                clickCount: clickCount,
-                pid: snapshot.app.pid
-            )
+            try InputDiagnostics.input(route: method, point: eventPoint) {
+                try InputSimulation.clickWithSkyLight(
+                    at: eventPoint, windowPoint: windowPoint, windowBounds: windowBounds,
+                    windowID: windowID, clickCount: clickCount, pid: snapshot.app.pid
+                )
+            }
         case .global:
             guard globalPointerFallbacksEnabled(environment: ProcessInfo.processInfo.environment) else {
                 throw ComputerUseError.message(
@@ -2118,7 +2139,9 @@ public final class ComputerUseService {
             }
             debugClickDecision("requested=global executed=global_hid target=\(targetDescription)")
             InputSimulation.prepareAppForGlobalPointerInput(snapshot.app)
-            try InputSimulation.clickGlobally(at: eventPoint, button: button, clickCount: clickCount)
+            try InputDiagnostics.input(route: method, point: eventPoint) {
+                try InputSimulation.clickGlobally(at: eventPoint, button: button, clickCount: clickCount)
+            }
         case .auto, .accessibility:
             throw ComputerUseError.message(
                 "click_method '\(method.rawValue)' is not a direct mouse event method"

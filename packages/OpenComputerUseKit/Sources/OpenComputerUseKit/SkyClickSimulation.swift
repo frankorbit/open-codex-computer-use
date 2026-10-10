@@ -136,6 +136,12 @@ enum SkyClickDispatcher {
         let clickGroupID = Int64(DispatchTime.now().uptimeNanoseconds % 1_000_000_000)
 
         let frontmostPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        InputDiagnostics.event("sky_click_plan", [
+            "window_id": String(target.windowID), "target_pid": String(target.pid),
+            "foreground_pid": frontmostPID.map(String.init) ?? "unknown",
+            "screen_point": InputDiagnostics.point(target.screenPoint), "window_point": InputDiagnostics.point(target.windowPoint),
+            "delay_scale": String(InputTiming.skyClickDelayScale), "event_count": String(recipe.count),
+        ])
         let focusContext: SkyLightSyntheticFocusContext?
         if frontmostPID == target.pid {
             focusContext = nil
@@ -177,6 +183,11 @@ enum SkyClickDispatcher {
                 // not a retry after an observed failure.
                 try spi.postToPid(event, pid: target.pid)
                 event.postToPid(target.pid)
+                InputDiagnostics.event("sky_event_posted", [
+                    "event_type": String(step.kind.cgEventType.rawValue), "phase": String(step.phase),
+                    "click_state": String(step.clickState), "screen_point": InputDiagnostics.point(screenPoint),
+                    "window_point": InputDiagnostics.point(windowPoint), "channels": "skylight_and_public_pid",
+                ])
 
                 let delay = step.delayAfter * InputTiming.skyClickDelayScale
                 if delay > 0 {

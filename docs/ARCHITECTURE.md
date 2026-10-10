@@ -183,3 +183,7 @@ macOS 坐标 `auto` 点击只对实时命中、属于当前窗口且包含点击
 相关回归位于 `CoordinateClickTests.swift`；真实第三方 App 的命中结果和鼠标投递效果仍需 GUI 验收。
 
 仅 sky_click 允许后台或跨 Space 的鼠标输入。auto 的 app_post 路径还要求目标是前台 App 的聚焦窗口且点击点无遮挡，否则输入前拒绝，避免 PID-only 事件误投同进程其他窗口。显式 app_post API 不变。
+
+### 输入诊断
+
+click MCP 回执中的 `_meta.ocuDiagnostic` 关联 `ai.today.ocu / input` 的 OSLog notice。同步调用范围内记录坐标映射、窗口校验、选路和事件发送步骤，仅保留数字和固定状态标签。returned 表示调用返回，输入效果仍为 unverified；日志不证明目标应用消费了事件。宿主不必捕获可能含正文的 stderr。

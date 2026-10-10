@@ -10,6 +10,8 @@ func validateCoordinateWindow(
     requireUnoccludedPoint: Bool,
     spacesForWindow: (CGWindowID) -> [UInt64]?
 ) throws {
+    var accepted = false
+    defer { InputDiagnostics.event("window_validation", ["accepted": String(accepted), "window_id": String(windowID), "target_pid": String(pid), "require_unoccluded": String(requireUnoccludedPoint)]) }
     guard point.x.isFinite, point.y.isFinite, bounds.width > 0, bounds.height > 0, bounds.contains(point),
           let index = windows.firstIndex(where: { ($0[kCGWindowNumber as String] as? NSNumber)?.uint32Value == windowID }) else {
         throw ComputerUseError.stateUnavailable("Coordinate target is missing or outside its snapshot window; observe again")
@@ -46,9 +48,15 @@ func validateCoordinateWindow(
             throw ComputerUseError.stateUnavailable("Cannot verify Spaces of overlapping windows; observe again")
         }
         if !Set(targetSpaces).isDisjoint(with: aboveSpaces) {
+            InputDiagnostics.event("window_blocked", [
+                "window_id": String(windowID), "blocking_window_id": String(aboveID),
+                "blocking_pid": owner.stringValue, "blocking_bounds": InputDiagnostics.bounds(aboveBounds),
+                "blocking_layer": (above[kCGWindowLayer as String] as? NSNumber)?.stringValue ?? "unknown",
+            ])
             throw ComputerUseError.stateUnavailable("Coordinate target is covered by another receiving window; observe again")
         }
     }
+    accepted = true
 }
 
 private func coordinateWindowBounds(_ info: [String: Any]) -> CGRect? {

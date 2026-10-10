@@ -87,6 +87,11 @@ public final class StdioMCPServer {
             case "tools/call":
                 let name = params["name"] as? String ?? ""
                 let arguments = params["arguments"] as? [String: Any] ?? [:]
+                if name == "click" {
+                    return try encodeJSONRPCResult(id: id, result: InputDiagnostics.result {
+                        try dispatcher.callTool(name: name, arguments: arguments)
+                    })
+                }
                 let result = try dispatcher.callTool(name: name, arguments: arguments)
                 return try encodeJSONRPCResult(
                     id: id,
