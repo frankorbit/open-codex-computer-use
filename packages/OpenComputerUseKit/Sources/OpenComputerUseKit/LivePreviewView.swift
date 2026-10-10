@@ -50,6 +50,17 @@ final class LivePreviewView: NSView {
     var cursorPoint: CGPoint?
     var cursorState: SoftwareCursorGlyphRenderState?
 
+    func showFrame(_ frame: CGImage) {
+        if image?.width != frame.width || image?.height != frame.height, let window {
+            let size = CGSize(width: frame.width, height: frame.height)
+            // 与旧版一致：比例约束不会调整现有尺寸，首帧和换尺寸时必须同步内容高度。
+            window.contentAspectRatio = size
+            let width = min(640, max(240, bounds.width))
+            window.setContentSize(CGSize(width: width, height: width * size.height / size.width))
+        }
+        image = frame
+    }
+
     override func draw(_ dirtyRect: NSRect) {
         NSColor.black.setFill()
         bounds.fill()

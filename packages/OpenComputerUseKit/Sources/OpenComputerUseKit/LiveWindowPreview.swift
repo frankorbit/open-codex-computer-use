@@ -301,9 +301,8 @@ final class LiveWindowPreview: NSObject {
             return
         }
         windowBounds = bounds
-        view.image = image
+        view.showFrame(image)
         view.sourceSize = captureSize
-        panel?.contentAspectRatio = CGSize(width: image.width, height: image.height)
     }
 
     private static func stopCapture(_ stream: SCStream) async {
