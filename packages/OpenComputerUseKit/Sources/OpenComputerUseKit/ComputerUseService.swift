@@ -16,8 +16,8 @@ public enum ClickMethod: String, CaseIterable, Sendable {
     case global
 }
 
-func clickActionSnapshotRecoveryPolicy(for method: ClickMethod) -> SnapshotRecoveryPolicy {
-    method == .skyClick ? .readOnly : .allowActivation
+func clickActionSnapshotRecoveryPolicy(for method: ClickMethod, coordinateInput: Bool = false) -> SnapshotRecoveryPolicy {
+    method == .skyClick || (method == .auto && coordinateInput) ? .readOnly : .allowActivation
 }
 
 func parseClickMethod(_ rawValue: String?) throws -> ClickMethod {
@@ -719,7 +719,7 @@ public final class ComputerUseService {
             throw ComputerUseError.invalidArguments("click requires either element_index or x/y")
         }
 
-        return try actionResult(for: query, recoveryPolicy: clickActionSnapshotRecoveryPolicy(for: clickMethod))
+        return try actionResult(for: query, recoveryPolicy: clickActionSnapshotRecoveryPolicy(for: clickMethod, coordinateInput: elementIndex == nil))
     }
 
     public func performSecondaryAction(app query: String, elementIndex: String, action: String) throws -> ToolCallResult {
@@ -1034,12 +1034,14 @@ public final class ComputerUseService {
         clickCount: Int
     ) throws {
         let backend = coordinateClickBackend ?? liveCoordinateClickBackend()
+        try backend.validateWindow(globalPoint, snapshot)
         let hit = try backend.hitTest(globalPoint, snapshot)
         try dispatchCoordinateClick(
             at: windowPoint,
             target: hit?.target,
             button: button,
             clickCount: clickCount,
+            validateWindow: { try backend.validateWindow(globalPoint, snapshot) },
             performAX: { action in
                 guard let hit else {
                     throw ComputerUseError.stateUnavailable("Coordinate hit target is unavailable; observe again")
@@ -1053,8 +1055,11 @@ public final class ComputerUseService {
     private func liveCoordinateClickBackend() -> CoordinateClickBackend {
         // 闭包仅在本次同步调用存活，不存回 service，避免形成持有环。
         CoordinateClickBackend(
+            validateWindow: { point, snapshot in
+                try self.validateCoordinateSnapshot(at: point, snapshot: snapshot)
+            },
             hitTest: { globalPoint, snapshot in
-                guard let record = try self.hitTestElement(atGlobalPoint: globalPoint, in: snapshot),
+                guard let record = try self.hitTestElement(atGlobalPoint: globalPoint, in: snapshot, strictQueryErrors: true),
                       let element = record.element else { return nil }
                 return CoordinateClickHit(
                     target: CoordinateClickTarget(
@@ -1070,23 +1075,62 @@ public final class ComputerUseService {
                 )
             },
             performMouse: { point, button, clickCount, snapshot in
-                self.debugClickDecision("requested=auto executed=coordinate_mouse")
-                try self.performNonAXClickFallback(
-                    at: point, button: button, clickCount: clickCount,
-                    targetDescription: "coordinate", snapshot: snapshot
+                let method = coordinateMouseMethod(
+                    button: button, clickCount: clickCount,
+                    globalEnabled: globalPointerFallbacksEnabled(environment: ProcessInfo.processInfo.environment)
+                )
+                if method == .global || method == .appPost {
+                    try self.validateCoordinateSnapshot(at: point, snapshot: snapshot, requireUnoccludedPoint: true)
+                }
+                if method == .appPost {
+                    var focused: CFTypeRef?
+                    let app = AXUIElementCreateApplication(snapshot.app.pid)
+                    let result = AXUIElementCopyAttributeValue(app, kAXFocusedWindowAttribute as CFString, &focused)
+                    let focusedMatches = result == .success && focused.map { focused in
+                        snapshot.windowElement.map { CFEqual(focused, $0) } ?? false
+                    } == true
+                    try validateCoordinateAppPostReceiver(
+                        frontmostPID: NSWorkspace.shared.frontmostApplication?.processIdentifier,
+                        expectedPID: snapshot.app.pid, focusedWindowMatches: focusedMatches
+                    )
+                }
+                guard let bounds = snapshot.windowBounds else {
+                    throw ComputerUseError.stateUnavailable("Coordinate window bounds are unavailable")
+                }
+                try self.performExplicitMouseClick(
+                    method: method, at: point,
+                    windowPoint: CGPoint(x: point.x - bounds.minX, y: point.y - bounds.minY),
+                    button: button, clickCount: clickCount,
+                    targetDescription: "auto coordinate", snapshot: snapshot
                 )
             }
         )
     }
 
-    private func elementBelongsToSnapshotWindow(_ element: AXUIElement?, snapshot: AppSnapshot) -> Bool {
-        guard let element, let window = snapshot.windowElement else { return false }
+    private func validateCoordinateSnapshot(
+        at point: CGPoint, snapshot: AppSnapshot, requireUnoccludedPoint: Bool = false
+    ) throws {
+        guard !snapshot.app.runningApplication.isTerminated, !snapshot.app.runningApplication.isHidden,
+              let windowID = snapshot.targetWindowID, let bounds = snapshot.windowBounds,
+              let windows = CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]] else {
+            throw ComputerUseError.stateUnavailable("Coordinate target window is unavailable; run get_app_state again")
+        }
+        try validateCoordinateWindow(
+            windowID: windowID, pid: snapshot.app.pid, bounds: bounds, point: point,
+            windows: windows, requireUnoccludedPoint: requireUnoccludedPoint,
+            spacesForWindow: { SkyLightSPI.shared.spaces(forWindow: $0) }
+        )
+    }
+
+    private func elementBelongsToSnapshotWindow(_ element: AXUIElement?, snapshot: AppSnapshot) -> Bool? {
+        guard let element else { return nil }
         var pid: pid_t = 0
         guard AXUIElementGetPid(element, &pid) == .success, pid == snapshot.app.pid else { return false }
+        guard let window = snapshot.windowElement else { return nil }
         if CFEqual(element, window) { return true }
         var value: CFTypeRef?
         guard AXUIElementCopyAttributeValue(element, kAXWindowAttribute as CFString, &value) == .success,
-              let value, CFGetTypeID(value) == AXUIElementGetTypeID() else { return false }
+              let value, CFGetTypeID(value) == AXUIElementGetTypeID() else { return nil }
         return CFEqual(value, window)
     }
 
@@ -1318,13 +1362,17 @@ public final class ComputerUseService {
         try hitTestElement(atGlobalPoint: windowPointToGlobalPoint(snapshot: snapshot, point: point), in: snapshot)
     }
 
-    private func hitTestElement(atGlobalPoint globalPoint: CGPoint, in snapshot: AppSnapshot) throws -> ElementRecord? {
+    private func hitTestElement(atGlobalPoint globalPoint: CGPoint, in snapshot: AppSnapshot, strictQueryErrors: Bool = false) throws -> ElementRecord? {
         let appElement = AXUIElementCreateApplication(snapshot.app.pid)
         var hitElement: AXUIElement?
         let result = AXUIElementCopyElementAtPosition(appElement, Float(globalPoint.x), Float(globalPoint.y), &hitElement)
-        guard result == .success, let hitElement else {
-            return nil
+        if strictQueryErrors {
+            guard try coordinateHitTestHasElement(result) else { return nil }
+            guard hitElement != nil else {
+                throw ComputerUseError.stateUnavailable("AX hit test returned an empty success; observe again")
+            }
         }
+        guard result == .success, let hitElement else { return nil }
 
         let rawActions = copyActions(for: hitElement) ?? []
         return ElementRecord(

@@ -25,7 +25,7 @@ final class CoordinateClickTests: XCTestCase {
         var events: [String] = []
         try dispatchCoordinateClick(
             at: point, target: target, button: button, clickCount: clickCount,
-            performAX: { events.append($0); return axResult },
+            validateWindow: {}, performAX: { events.append($0); return axResult },
             performMouse: { events.append("mouse") }
         )
         return events
@@ -44,7 +44,7 @@ final class CoordinateClickTests: XCTestCase {
 
     func testRaiseOnlyControlUsesMouse() throws {
         XCTAssertEqual(try dispatch(target(actions: [kAXRaiseAction])), ["mouse"])
-        XCTAssertThrowsError(try dispatch(nil))
+        XCTAssertEqual(try dispatch(nil), ["mouse"])
     }
 
     func testWindowControlCanOnlyBePressedAtItsOwnCoordinates() throws {
@@ -54,7 +54,7 @@ final class CoordinateClickTests: XCTestCase {
         var events: [String] = []
         try dispatchCoordinateClick(
             at: CGPoint(x: 16, y: 16), target: close, button: .left, clickCount: 1,
-            performAX: { events.append($0); return .success },
+            validateWindow: {}, performAX: { events.append($0); return .success },
             performMouse: { events.append("mouse") }
         )
         XCTAssertEqual(events, [kAXPressAction])
@@ -64,7 +64,7 @@ final class CoordinateClickTests: XCTestCase {
         var events: [String] = []
         XCTAssertThrowsError(try dispatchCoordinateClick(
             at: point, target: target(belongsToWindow: false), button: .left, clickCount: 1,
-            performAX: { events.append($0); return .success },
+            validateWindow: {}, performAX: { events.append($0); return .success },
             performMouse: { events.append("mouse") }
         ))
         XCTAssertTrue(events.isEmpty)
@@ -85,7 +85,7 @@ final class CoordinateClickTests: XCTestCase {
             var events: [String] = []
             XCTAssertThrowsError(try dispatchCoordinateClick(
                 at: point, target: target(actions: [kAXPressAction, kAXConfirmAction]), button: .left, clickCount: 1,
-                performAX: { events.append($0); return error },
+                validateWindow: {}, performAX: { events.append($0); return error },
                 performMouse: { events.append("mouse") }
             ))
             XCTAssertEqual(events, [kAXPressAction])
@@ -96,7 +96,7 @@ final class CoordinateClickTests: XCTestCase {
         var mouseCount = 0
         XCTAssertThrowsError(try dispatchCoordinateClick(
             at: point, target: target(), button: .left, clickCount: 1,
-            performAX: { _ in throw ComputerUseError.message("transport failed") },
+            validateWindow: {}, performAX: { _ in throw ComputerUseError.message("transport failed") },
             performMouse: { mouseCount += 1 }
         ))
         XCTAssertEqual(mouseCount, 0)
@@ -161,6 +161,7 @@ final class CoordinateClickServiceTests: XCTestCase {
             var mousePoints: [CGPoint] = []
             var axActions: [String] = []
             let backend = CoordinateClickBackend(
+                validateWindow: { _, _ in },
                 hitTest: { point, _ in
                     queried.append(point)
                     return CoordinateClickHit(
@@ -180,12 +181,48 @@ final class CoordinateClickServiceTests: XCTestCase {
         }
     }
 
-    func testActualCoordinateClickWithFailedHitTestSendsNothing() throws {
+    func testActualCoordinateClickWithoutAXUsesValidatedWindow() throws {
         let state = try snapshot(imageSize: CGSize(width: 1280, height: 853))
         var mouseCount = 0
-        let backend = CoordinateClickBackend(hitTest: { _, _ in nil }, performMouse: { _, _, _, _ in mouseCount += 1 })
+        var validations = 0
+        let backend = CoordinateClickBackend(
+            validateWindow: { _, _ in validations += 1 },
+            hitTest: { _, _ in nil }, performMouse: { _, _, _, _ in mouseCount += 1 }
+        )
+        let service = ComputerUseService(snapshots: ["test.canvas": state], coordinateClickBackend: backend)
+        _ = try service.click(app: "test.canvas", elementIndex: nil, x: 250, y: 400, clickCount: 1, mouseButton: "left")
+        XCTAssertEqual(mouseCount, 1)
+        XCTAssertEqual(validations, 2)
+    }
+
+    func testWindowChangingDuringHitTestSendsNothing() throws {
+        let state = try snapshot(imageSize: CGSize(width: 1280, height: 853))
+        var validations = 0
+        var mouseCount = 0
+        let backend = CoordinateClickBackend(
+            validateWindow: { _, _ in
+                validations += 1
+                if validations == 2 { throw ComputerUseError.stateUnavailable("window moved") }
+            },
+            hitTest: { _, _ in nil }, performMouse: { _, _, _, _ in mouseCount += 1 }
+        )
         let service = ComputerUseService(snapshots: ["test.canvas": state], coordinateClickBackend: backend)
         XCTAssertThrowsError(try service.click(app: "test.canvas", elementIndex: nil, x: 250, y: 400, clickCount: 1, mouseButton: "left"))
+        XCTAssertEqual(validations, 2)
+        XCTAssertEqual(mouseCount, 0)
+    }
+
+    func testMissingWindowFailsBeforeHitTest() throws {
+        let state = try snapshot(imageSize: CGSize(width: 1280, height: 853))
+        var queries = 0
+        var mouseCount = 0
+        let backend = CoordinateClickBackend(
+            validateWindow: { _, _ in throw ComputerUseError.stateUnavailable("window missing") },
+            hitTest: { _, _ in queries += 1; return nil }, performMouse: { _, _, _, _ in mouseCount += 1 }
+        )
+        let service = ComputerUseService(snapshots: ["test.canvas": state], coordinateClickBackend: backend)
+        XCTAssertThrowsError(try service.click(app: "test.canvas", elementIndex: nil, x: 250, y: 400, clickCount: 1, mouseButton: "left"))
+        XCTAssertEqual(queries, 0)
         XCTAssertEqual(mouseCount, 0)
     }
 }
