@@ -65,15 +65,15 @@
 
 ### 3. Tool Service 层
 
-- `ComputerUseService` 负责把 Computer Use tool 请求映射到本地能力，`ComputerUseToolDispatcher` 则把 9 个 tool 的参数解析与 service 方法分发收敛成 MCP server 和 `open-computer-use call` 共用的一层。
-- Codex plugin 的 `.mcp.json` 默认不再把这 9 个 tools 直接暴露给模型，而是启动 `scripts/node-repl/open-computer-use-repl.mjs`。adapter 以 child MCP client 连接同一个 native runtime，并只对外列出 `js` / `js_reset`；JavaScript 通过异步 app-bound API（`cua.getApp(...)`、`app.click(...)`、`app.getAXState()` 等）调用 native tools。
+- `ComputerUseService` 负责把 Computer Use tool 请求映射到本地能力，`ComputerUseToolDispatcher` 则把工具的参数解析与 service 方法分发收敛成 MCP server 和 `open-computer-use call` 共用的一层。
+- Codex plugin 的 `.mcp.json` 默认不把 native tools 直接暴露给模型，而是启动 `scripts/node-repl/open-computer-use-repl.mjs`。adapter 以 child MCP client 连接同一个 native runtime，并只对外列出 `js` / `js_reset`；JavaScript 通过异步 app-bound API（`cua.getApp(...)`、`app.click(...)`、`app.getAXState()` 等）调用 native tools。
 - REPL 使用 Node.js 自带的 evaluator，因此保留 top-level `await` 和跨调用 lexical bindings；真正执行代码的 kernel 位于 Worker 中，超时会终止 Worker 并重建干净 session，避免 `while (true)` 挂死 MCP transport。
 - npm launcher 还直接提供 `ocu js` 和 `ocu repl`：前者为一次性 Worker/native MCP session，后者在当前终端内保留同一个 session 和 binding；两者退出后都会关闭 Worker 与 native MCP child。`ocu capabilities [--json]` 在不启动 native MCP 的情况下报告 Node、adapter、kernel 和当前平台 native artifact 是否齐全。help 始终显示 code-first 命令并标记 availability，不按环境动态隐藏接口。
 - npm bin 当前本身通过 `#!/usr/bin/env node` 启动，因此完全没有 Node 的 shell 无法进入 help/capability 检测；launcher 启动后会复用 `process.execPath`，不会再次从 PATH 解析 Node。若未来要求零 Node 前置，应把最外层入口替换成 native bootstrap 或随包分发 Node。
-- 这是增量迁移：`open-computer-use mcp` 仍是原生 9-tool compatibility surface，已有 CLI、其他 MCP host 和 smoke 不需要切换。
+- 这是增量迁移：`open-computer-use mcp` 保留原生 9-tool compatibility surface，macOS 的应用绑定与普通观察通过 `get_app_state.initialize` 区分，不增加生命周期工具；hover 开启后为 10 个。
 - `list_apps` 通过 Spotlight metadata query 拉取标准 application 目录里的 app bundle，并读取 `kMDItemUseCount` / `kMDItemLastUsedDate_Ranking` 这类系统元数据；再与 `NSWorkspace` 的运行态 app 合并，输出“当前运行中 + 近 14 天用过”的视图。
-- `get_app_state` 优先走真实 AX / 窗口截图；真实 app 必须同时有未最小化的 `AXWindow` 和可匹配的 on-screen `CGWindow`。显式观察不激活或抬升窗口；冷启动使用非激活配置，窗口尚未就绪时只对无窗口错误进行有界只读重试，仍无法匹配则返回 `Apple event error -10005: cgWindowNotFound`，不把 application 根节点或无截图窗口伪装成可操作状态。当目标是仓库内 fixture app 时，回退到 fixture 导出的合成状态。真实 AX tree 默认在 macOS、Linux、Windows 上最多渲染 1200 个节点、64 层深度；显式 `get_app_state` / `snapshot` 可通过 `max_tree_nodes` / `max_tree_depth` 覆盖预算，action tools 的刷新结果仍使用默认预算。snapshot 文本默认截断到 500 字符；显式 `get_app_state` / `snapshot` 可通过 `text_limit` 正整数或 `"max"` 覆盖，action tools 的刷新结果仍使用 500 字符默认值。对 Electron/WebView 这类深层 UI 会压缩空 `AXGroup` / `AXUnknown` wrapper、过滤 `AXScrollToVisible` 噪音和空字符串属性，避免 action-critical 的输入框被无语义容器挤出节点预算；但通用节点中的 `AXPress` / `AXConfirm` / `AXOpen` 子节点会形成文本摘要边界，避免多个可点击选项被合并成一个 container。这类动作节点如果 frame 有效、尺寸紧凑且不包含带 URL 的 `AXLink` 后代，会保留为带窗口相对 `Frame` 的 `button`，并用短文本后代作为按钮摘要，让 icon-only 和文字 Web 控件都能获得可区分的 `element_index`；包含带 URL 的 `AXLink` 后代时保留通用 wrapper 和链接子节点，避免导航链接被摘要吞掉。对原生 open panel / Finder column view 这类把内容放在 `AXContents` / `AXVisibleChildren` 里的控件，也会把可见文件项纳入元素树。
-- MCP `tools/list` 的 description / input schema 当前按官方 `computer-use` 的 9 个 tools 文案和参数面收敛，尽量减少 host 侧提示词和 tool surface 偏差。
+- `get_app_state` 优先走真实 AX / 窗口截图；真实 app 必须同时有未最小化的 `AXWindow` 和可匹配的 on-screen `CGWindow`。普通观察不激活或抬升窗口；绑定时可后台启动或 reopen 一次，窗口尚未就绪时只对无窗口错误进行有界只读重试，仍无法匹配则返回 `Apple event error -10005: cgWindowNotFound`，不把 application 根节点或无截图窗口伪装成可操作状态。当目标是仓库内 fixture app 时，回退到 fixture 导出的合成状态。真实 AX tree 默认在 macOS、Linux、Windows 上最多渲染 1200 个节点、64 层深度；显式 `get_app_state` / `snapshot` 可通过 `max_tree_nodes` / `max_tree_depth` 覆盖预算，action tools 的刷新结果仍使用默认预算。snapshot 文本默认截断到 500 字符；显式 `get_app_state` / `snapshot` 可通过 `text_limit` 正整数或 `"max"` 覆盖，action tools 的刷新结果仍使用 500 字符默认值。对 Electron/WebView 这类深层 UI 会压缩空 `AXGroup` / `AXUnknown` wrapper、过滤 `AXScrollToVisible` 噪音和空字符串属性，避免 action-critical 的输入框被无语义容器挤出节点预算；但通用节点中的 `AXPress` / `AXConfirm` / `AXOpen` 子节点会形成文本摘要边界，避免多个可点击选项被合并成一个 container。这类动作节点如果 frame 有效、尺寸紧凑且不包含带 URL 的 `AXLink` 后代，会保留为带窗口相对 `Frame` 的 `button`，并用短文本后代作为按钮摘要，让 icon-only 和文字 Web 控件都能获得可区分的 `element_index`；包含带 URL 的 `AXLink` 后代时保留通用 wrapper 和链接子节点，避免导航链接被摘要吞掉。对原生 open panel / Finder column view 这类把内容放在 `AXContents` / `AXVisibleChildren` 里的控件，也会把可见文件项纳入元素树。
+- MCP 基础 9 个工具的 description / input schema 按官方 `computer-use` 文案和参数面收敛；应用初始化是 `get_app_state` 的参数，不另增 `open_app` 工具。
 - JS REPL 的 API 和当前官方 code-first 形态对齐到异步 app binding，而不是把离散 tools 简单包成同步函数。snapshot 的 `windowPlacement` 以及 keyboard action 的 `keyMethod` 会转换成 native tool 的 snake_case 参数。实现不复制或运行 proprietary `@oai/*` package；协议和行为记录在 `docs/references/js-repl.md`。
 - `open-computer-use call <tool> --args '{...}'` 会直接输出 MCP-style JSON result；`open-computer-use call --calls '[...]'` / `--calls-file <path>` 会在同一进程里顺序执行 JSON 数组里的 tool calls，并复用同一个 `ComputerUseService` 内存态，因此 `get_app_state` 之后的 action tool 可以继续使用同一轮 snapshot 的 `element_index`。序列执行默认会在成功的相邻操作之间 sleep 1 秒，也可以用 `--sleep <seconds>` 覆盖；遇到 `isError=true` 的 tool result 后停止。
 - 对真实 app 的 `get_app_state` / action tool 入口，当前只保留一层密码管理器 bundle denylist：bundle-id 直传时直接返回 safety denial；名称匹配时默认不解析到这些 app。终端、Chrome / Atlas 和系统组件不再属于内置阻止目标。
@@ -198,10 +198,20 @@ click MCP 回执中的 `_meta.ocuDiagnostic` 关联 `ai.today.ocu / input` 的 O
 
 窗口准备只允许 AXRaise 绑定窗口及必要的 App 激活，不使用 `activateAllWindows`。有效后台 AX 动作与观察无需为此激活 App。事件投递成功仍需调用方观察实际界面结果。
 
-普通 `get_app_state` 现在使用只读恢复策略；冷启动配置 `activates=false`。窗口尚未注册时，仅对明确的无窗口错误最多等待五次 100ms 后再读，不调用 activate/raise/open 恢复。隐藏、最小化、无可观察窗口会明确失败；普通动作回读同样不执行激活恢复。观察失败会废弃该目标所有别名的输入快照；输入缓存缺失时必须先显式观察，不能隐式刷新后继续输入。后台能力不等于保证目标 App 自身永不改变焦点。
+普通观察（`get_app_state.initialize=false`）只解析运行中进程并使用只读恢复策略；启动与重开仅在绑定阶段执行。窗口尚未注册时，仅对明确的无窗口错误最多等待五次 100ms 后再读，不调用 activate/raise/open 恢复。隐藏、最小化、无可观察窗口会明确失败；普通动作回读同样不执行激活恢复。观察失败会废弃该目标所有别名的输入快照；输入缓存缺失时必须先显式观察，不能隐式刷新后继续输入。后台能力不等于保证目标 App 自身永不改变焦点。
 
 ### 复审修正：未知动作、实际接收窗口与失效快照
 
 - 元素索引路径只有动作未列于可用 AX actions 时才允许继续选路；一旦调用 AX，非成功回执终止本次输入，包括重复动作的中途失败，不再尝试候选元素或 HID。
 - 前台点击最终以 `NSWindow.windowNumber(at:belowWindowWithWindowNumber:)` 确认 mouse-down 实际接收窗口，查询使用转换后的 AppKit 屏幕坐标并从最上层开始。它按系统命中规则跳过透明区域和忽略鼠标事件的窗口，不按 Dock/helper 进程放行。返回空、其他窗口或无法映射屏幕时拒绝输入；ID、PID、几何和前台焦点检查保留。后台定向输入仍保留同 App/同 Space 遮挡检查。
 - AppKit API 依据：[Apple 鼠标按下命中查询文档](https://developer.apple.com/documentation/appkit/nswindow/windownumber(at:belowwindowwithwindownumber:))。这些自动化回归不代替腾讯会议、Dock 和多显示器的真实界面验收。
+
+## 应用绑定与观察
+
+`cua.getApp(nameOrBundleID)` 在一次 `get_app_state(initialize=true)` 调用内完成绑定：已有窗口直接返回；未运行时后台启动；已有进程但有界观察后仍明确无窗口时，通过 NSWorkspace 后台 reopen 一次。回调的实际 PID、bundle 身份用于后续快照，不再根据安装包名重新猜测进程。打开后仅重试只读观察，不重发打开操作；权限或其他错误保持原错误，不触发 reopen。打开不保证创建文档，模型必须根据返回的打开面板或窗口继续操作。
+
+绑定对象的 `getAXState` / `getScreenshot` / `getAXStateAndScreenshot` 明确发送 `initialize=false`；动作回读也只观察。原生 MCP 工具与 CLI snapshot 默认初始化，兼容直接使用原生入口启动目标的路径。系统配置 `activates=false` 且不新建应用实例；这只表示不主动要求前台激活，不保证第三方应用自己不会改变焦点。
+
+打开前先只读定位安装目标，得到固定的 bundle ID（缺失时使用规范 bundle 路径），再登记待恢复状态并发送一次打开请求。回调结果未知或打开后的观察失败均保留该状态；首次 getApp 未返回绑定时，可再次 getApp 继续观察，同一目标换名称、bundle ID 或路径也不能重放打开。成功观察只解除对应目标的状态，同名但不同 bundle 的应用互不干扰。安装查找失败发生在登记与发送之前，不会阻止安装后重试。初始化只失效目标应用的输入快照，不清空其他应用缓存。
+
+该接口行为依据 Codex 实际工具实验：Calculator/Chess 未运行时 getApp 可启动，TextEdit 关闭打开面板后普通观察失败，重新 getApp 恢复打开面板。官方内部是否使用 NSWorkspace 及其 PID 管理方式无法由实验确认。本 fork 实现不宣称复制其内部代码；最小化、隐藏与抢前台行为仍需独立验收。

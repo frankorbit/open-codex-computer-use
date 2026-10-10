@@ -71,11 +71,12 @@ public enum ToolDefinitions {
         ),
         ToolDefinition(
             name: "get_app_state",
-            description: "Start an app use session if needed, then get the state of the app's key window and return a screenshot and accessibility tree. This must be called once per assistant turn before interacting with the app. This tool is part of plugin `Computer Use`.",
+            description: "Get the state of the app's key window and return a screenshot and accessibility tree. initialize=true binds the app, launching or reopening it in the background if needed; subsequent observations set initialize=false and never reopen. Observe successfully before interacting with the app. This tool is part of plugin `Computer Use`.",
             annotations: defaultAnnotations(),
             inputSchema: objectSchema(
                 properties: [
                     "app": stringProperty(description: "App name or bundle identifier"),
+                    "initialize": ["type": "boolean", "description": "Bind the app, opening it once if not running or without an observable window. Defaults to true for keep placement, false for explicit window placement. Set false for observation only."],
                     "text_limit": textLimitProperty(description: "Maximum text characters to return. Use \"max\" for full text. Defaults to 500."),
                     "max_tree_nodes": positiveIntegerProperty(description: "Maximum accessibility tree nodes to render. Defaults to 1200."),
                     "max_tree_depth": positiveIntegerProperty(description: "Maximum accessibility tree depth to render. Defaults to 64."),

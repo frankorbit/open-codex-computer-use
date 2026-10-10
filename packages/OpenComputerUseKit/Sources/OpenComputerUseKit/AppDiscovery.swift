@@ -2,6 +2,34 @@ import AppKit
 import CoreServices
 import Foundation
 
+enum ApplicationOpeningIdentity: Hashable {
+    case bundle(String)
+    case path(String)
+
+    init(url: URL, bundleIdentifier: String?) {
+        if let bundleIdentifier, !bundleIdentifier.isEmpty {
+            self = .bundle(bundleIdentifier.lowercased())
+        } else {
+            self = .path(url.resolvingSymlinksInPath().standardizedFileURL.path)
+        }
+    }
+
+    init?(_ app: RunningAppDescriptor) {
+        if let bundleIdentifier = app.bundleIdentifier, !bundleIdentifier.isEmpty {
+            self = .bundle(bundleIdentifier.lowercased())
+        } else if let url = app.runningApplication.bundleURL {
+            self.init(url: url, bundleIdentifier: nil)
+        } else {
+            return nil
+        }
+    }
+}
+
+struct ApplicationOpeningRequest {
+    let identity: ApplicationOpeningIdentity
+    let perform: () throws -> RunningAppDescriptor
+}
+
 public struct RunningAppDescriptor {
     public let name: String
     public let bundleIdentifier: String?
@@ -142,28 +170,76 @@ enum AppDiscovery {
     }
 
     static func resolve(_ query: String) throws -> RunningAppDescriptor {
-        let normalizedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        let running = runningApps()
+        try resolve(query, in: runningApps(), installedBundleIdentifier: { name in
+            installedApplicationURL(name).flatMap { Bundle(url: $0)?.bundleIdentifier }
+        })
+    }
 
-        if let bundleIdentifier = blockedBundleIdentifier(forQuery: normalizedQuery) {
-            throw AppSafetyPolicy.permissionDenied(bundleIdentifier: bundleIdentifier)
+    static func resolve(
+        _ query: String,
+        in running: [RunningAppDescriptor],
+        installedBundleIdentifier: (String) -> String? = { _ in nil }
+    ) throws -> RunningAppDescriptor {
+        let normalized = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let blocked = blockedBundleIdentifier(forQuery: normalized) {
+            throw AppSafetyPolicy.permissionDenied(bundleIdentifier: blocked)
         }
-
-        if let match = resolvedRunningApp(in: running, matching: normalizedQuery) {
-            return match
-        }
-
-        try launchIfPossible(normalizedQuery)
-
-        for _ in 0..<20 {
-            if let launched = resolvedRunningApp(in: runningApps(), matching: normalizedQuery) {
-                return launched
+        if let match = resolvedRunningApp(in: running, matching: normalized) { return match }
+        // 安装名称可能不同于运行名称；只读解析 bundle 身份，不再因此启动一次应用。
+        if !normalized.hasPrefix("/"), let bundleID = installedBundleIdentifier(normalized) {
+            guard !AppSafetyPolicy.isBlocked(bundleIdentifier: bundleID) else {
+                throw AppSafetyPolicy.permissionDenied(bundleIdentifier: bundleID)
             }
-
-            Thread.sleep(forTimeInterval: 0.25)
+            if let match = resolvedRunningApp(in: running, matching: bundleID) { return match }
         }
+        throw ComputerUseError.appNotFound(normalized)
+    }
 
-        throw ComputerUseError.appNotFound(normalizedQuery)
+    static func open(_ query: String) throws -> RunningAppDescriptor {
+        try prepareOpen(query).perform()
+    }
+
+    static func prepareOpen(_ query: String) throws -> ApplicationOpeningRequest {
+        try prepareOpen(query, running: runningApps(), locate: installedApplicationURL, launch: openApplication)
+    }
+
+    static func open(
+        _ query: String,
+        running: [RunningAppDescriptor],
+        locate: (String) -> URL?,
+        launch: @escaping (URL) throws -> RunningAppDescriptor
+    ) throws -> RunningAppDescriptor {
+        try prepareOpen(query, running: running, locate: locate, launch: launch).perform()
+    }
+
+    static func prepareOpen(
+        _ query: String,
+        running: [RunningAppDescriptor],
+        locate: (String) -> URL?,
+        launch: @escaping (URL) throws -> RunningAppDescriptor
+    ) throws -> ApplicationOpeningRequest {
+        let normalized = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let blocked = blockedBundleIdentifier(forQuery: normalized) {
+            throw AppSafetyPolicy.permissionDenied(bundleIdentifier: blocked)
+        }
+        let url: URL
+        if let match = resolvedRunningApp(in: running, matching: normalized) {
+            guard let bundleURL = match.runningApplication.bundleURL else {
+                throw ComputerUseError.stateUnavailable("Cannot reopen an application without a bundle URL.")
+            }
+            url = bundleURL
+        } else {
+            guard let installedURL = locate(normalized) else {
+                throw ComputerUseError.appNotFound(normalized)
+            }
+            url = installedURL
+        }
+        if let bundleID = Bundle(url: url)?.bundleIdentifier, AppSafetyPolicy.isBlocked(bundleIdentifier: bundleID) {
+            throw AppSafetyPolicy.permissionDenied(bundleIdentifier: bundleID)
+        }
+        // 使用系统回调的真实身份，不再按可能不同于运行名称的安装包名称重新查找。
+        let identity = ApplicationOpeningIdentity(url: url, bundleIdentifier: Bundle(url: url)?.bundleIdentifier)
+        return ApplicationOpeningRequest(identity: identity, perform: { try launch(url) })
     }
 
     struct ResolutionCandidate {
@@ -173,6 +249,13 @@ enum AppDiscovery {
     }
 
     private static func resolvedRunningApp(in descriptors: [RunningAppDescriptor], matching query: String) -> RunningAppDescriptor? {
+        if query.hasPrefix("/") {
+            let url = URL(fileURLWithPath: query).resolvingSymlinksInPath()
+            return descriptors.first {
+                !AppSafetyPolicy.isBlocked(bundleIdentifier: $0.bundleIdentifier)
+                    && $0.runningApplication.bundleURL?.resolvingSymlinksInPath() == url
+            }
+        }
         if isBundleIdentifierQuery(query) {
             return descriptors.first(where: { descriptor in
                 descriptor.bundleIdentifier?.caseInsensitiveCompare(query) == .orderedSame
@@ -298,27 +381,16 @@ enum AppDiscovery {
         return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
     }
 
-    private static func launchIfPossible(_ query: String) throws {
+    private static func installedApplicationURL(_ query: String) -> URL? {
+        if query.hasPrefix("/") {
+            let url = URL(fileURLWithPath: query).resolvingSymlinksInPath()
+            guard url.pathExtension.lowercased() == "app", Bundle(url: url)?.bundleIdentifier != nil else { return nil }
+            return url
+        }
         if isBundleIdentifierQuery(query) {
-            guard !AppSafetyPolicy.isBlocked(bundleIdentifier: query) else {
-                return
-            }
-
-            if let appURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: query) {
-                try openApplication(at: appURL)
-            }
-            return
+            return NSWorkspace.shared.urlForApplication(withBundleIdentifier: query)
         }
-
-        guard let appURL = applicationURL(named: query) else {
-            return
-        }
-
-        if AppSafetyPolicy.isBlocked(bundleIdentifier: Bundle(url: appURL)?.bundleIdentifier) {
-            return
-        }
-
-        try openApplication(at: appURL)
+        return applicationURL(named: query)
     }
 
     private static func applicationURL(named query: String) -> URL? {
@@ -362,26 +434,28 @@ enum AppDiscovery {
 
     static func backgroundLaunchConfiguration() -> NSWorkspace.OpenConfiguration {
         let configuration = NSWorkspace.OpenConfiguration()
-        // 启动只负责提供可观察窗口，不抢占当前用户的前台应用。
+        // 绑定阶段可以启动或 reopen，但不要求系统把应用切到前台。
         configuration.activates = false
+        configuration.createsNewApplicationInstance = false
         return configuration
     }
 
-    private static func openApplication(at appURL: URL) throws {
-        let configuration = backgroundLaunchConfiguration()
+    private static func openApplication(at appURL: URL) throws -> RunningAppDescriptor {
         let semaphore = DispatchSemaphore(value: 0)
-        let errorBox = LaunchErrorBox()
-
-        NSWorkspace.shared.openApplication(at: appURL, configuration: configuration) { _, error in
-            errorBox.error = error
+        let result = LaunchResultBox()
+        NSWorkspace.shared.openApplication(at: appURL, configuration: backgroundLaunchConfiguration()) { app, error in
+            result.application = app
+            result.error = error
             semaphore.signal()
         }
-
         waitForSignal(semaphore)
-
-        if let launchError = errorBox.error {
-            throw launchError
+        if let launchError = result.error { throw launchError }
+        guard let app = result.application, !app.isTerminated,
+              app.bundleURL?.resolvingSymlinksInPath() == appURL.resolvingSymlinksInPath() else {
+            throw ComputerUseError.stateUnavailable("The open result has no live matching application. Observe before acting.")
         }
+        return RunningAppDescriptor(name: appName(app), bundleIdentifier: app.bundleIdentifier,
+                                    pid: app.processIdentifier, runningApplication: app)
     }
 
     private static func waitForSignal(_ semaphore: DispatchSemaphore) {
@@ -395,7 +469,9 @@ enum AppDiscovery {
         semaphore.wait()
     }
 
-    private final class LaunchErrorBox: @unchecked Sendable {
+    private final class LaunchResultBox: @unchecked Sendable {
+        // 回调写入后通过 semaphore 发布，调用线程等待完成再读取。
+        var application: NSRunningApplication?
         var error: Error?
     }
 

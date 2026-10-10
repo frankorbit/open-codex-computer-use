@@ -5,6 +5,7 @@ struct SnapshotDependencies {
     var resolve: (String) throws -> RunningAppDescriptor
     var build: (RunningAppDescriptor, SnapshotTextLimit, AccessibilityTreeLimits, SnapshotRecoveryPolicy) throws
         -> AppSnapshot
+    var prepareOpen: (String) throws -> ApplicationOpeningRequest = AppDiscovery.prepareOpen
     var captureHoverPopups: (AppSnapshot) -> [HoverPopupObservation] = HoverPopupObservation.capture
     var parkWindow: (CGWindowID, pid_t, AXUIElement) throws -> Void = { windowID, pid, window in
         try AgentDisplay.shared.park(windowID: windowID, pid: pid, window: window)
@@ -48,6 +49,7 @@ struct AppSnapshotCache {
 
     private var targetsByAlias: [String: Target] = [:]
     private var snapshotsByTarget: [Target: AppSnapshot] = [:]
+    private var pendingInitializations: Set<ApplicationOpeningIdentity> = []
 
     init(snapshots: [String: AppSnapshot] = [:]) {
         for (query, snapshot) in snapshots.sorted(by: { $0.key < $1.key }) {
@@ -65,6 +67,24 @@ struct AppSnapshotCache {
     mutating func recordObservation(_ snapshot: AppSnapshot, for query: String) {
         let target = bind(query, to: snapshot.app)
         snapshotsByTarget[target] = snapshot
+        if let identity = ApplicationOpeningIdentity(snapshot.app) {
+            pendingInitializations.remove(identity)
+        }
+    }
+
+    func hasPendingInitialization(for identity: ApplicationOpeningIdentity) -> Bool {
+        pendingInitializations.contains(identity)
+    }
+
+    mutating func beginInitialization(for identity: ApplicationOpeningIdentity, query: String) {
+        pendingInitializations.insert(identity)
+        // 冷启动的新别名可能尚未绑定，但同一应用的旧快照仍必须失效。
+        snapshotsByTarget = snapshotsByTarget.filter { ApplicationOpeningIdentity($0.value.app) != identity }
+        invalidate(query: query)
+    }
+
+    mutating func finishInitialization(for identity: ApplicationOpeningIdentity) {
+        pendingInitializations.remove(identity)
     }
 
     mutating func recordReadBack(_ snapshot: AppSnapshot, for query: String) throws {

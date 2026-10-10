@@ -648,12 +648,58 @@ public final class ComputerUseService {
         )
     }
 
+    private func initializeAppSnapshot(
+        for query: String,
+        textLimit: SnapshotTextLimit,
+        treeLimits: AccessibilityTreeLimits
+    ) throws -> AppSnapshot {
+        hoverPopupCache.clear()
+        let observationError: ComputerUseError
+        do {
+            // 已有可观察窗口直接绑定；只有无进程或明确无窗口才请求系统打开。
+            return try observeWithoutActivation {
+                try refreshSnapshot(for: query, textLimit: textLimit, treeLimits: treeLimits, explicitObservation: true)
+            }
+        } catch let error as ComputerUseError {
+            switch error {
+            case .appNotFound:
+                // 冷启动由下方唯一的打开请求完成。
+                break
+            case .stateUnavailable(let message) where message == computerUseNoWindowFoundMessage:
+                // 运行中但没有窗口时，reopen 可恢复应用自己的打开/新建入口。
+                break
+            default:
+                throw error
+            }
+            observationError = error
+        }
+
+        // 定位与执行分离：先固定目标，未知打开结果不能被名称、bundle ID 或路径别名绕过。
+        let request = try snapshotDependencies.prepareOpen(query)
+        guard !snapshotCache.hasPendingInitialization(for: request.identity) else { throw observationError }
+        // 打开可能改变窗口拓扑；成功回读前不能继续使用旧输入快照。
+        snapshotCache.beginInitialization(for: request.identity, query: query)
+        LiveWindowPreview.invalidate()
+        let app = try request.perform()
+        snapshotCache.invalidate(query: query, resolvedApp: app)
+        // 使用系统回调身份，只重试观察，不重复发送 launch/reopen。
+        let snapshot = try observeWithoutActivation {
+            try snapshotDependencies.build(app, textLimit, treeLimits, .readOnly)
+        }
+        snapshotCache.finishInitialization(for: request.identity)
+        return snapshot
+    }
+
     public func getAppState(
         app query: String,
         textLimit: SnapshotTextLimit = .defaults,
         treeLimits: AccessibilityTreeLimits = .defaults,
-        windowPlacement: WindowPlacement = .keep
+        windowPlacement: WindowPlacement = .keep,
+        initialize: Bool = false
     ) throws -> ToolCallResult {
+        guard !initialize || windowPlacement == .keep else {
+            throw ComputerUseError.invalidArguments("initialize cannot be combined with window_placement")
+        }
         var observationSucceeded = false
         defer {
             // 放置窗口或最终回读失败时，中间生成的快照也不能继续用于输入。
@@ -661,6 +707,12 @@ public final class ComputerUseService {
                 snapshotCache.invalidate(query: query)
                 LiveWindowPreview.invalidate()
             }
+        }
+        if initialize {
+            let snapshot = try initializeAppSnapshot(for: query, textLimit: textLimit, treeLimits: treeLimits)
+            snapshotCache.recordObservation(snapshot, for: query)
+            observationSucceeded = true
+            return snapshotResult(for: snapshot, style: .fullState)
         }
         guard windowPlacement != .keep else {
             let snapshot = try observeWithoutActivation {

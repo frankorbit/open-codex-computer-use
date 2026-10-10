@@ -404,7 +404,7 @@ private final class AppAgentConnection: @unchecked Sendable {
 
             case let .snapshot(app, textLimit, treeLimits):
                 let service = ComputerUseService()
-                let text = try service.getAppState(app: app, textLimit: textLimit, treeLimits: treeLimits).primaryText ?? ""
+                let text = try service.getAppState(app: app, textLimit: textLimit, treeLimits: treeLimits, initialize: true).primaryText ?? ""
                 return CLIProxyResponse(stdout: text + "\n", stderr: "", exitCode: EXIT_SUCCESS)
 
             case let .call(invocation):

@@ -123,15 +123,16 @@ test("app-bound API forwards background-operation options", async () => {
       max_tree_nodes: 42,
       max_tree_depth: 7,
       window_placement: "agent_display",
+      initialize: false,
     },
   });
   assert.deepEqual(native.calls[2], {
     name: "get_app_state",
-    arguments: { app: "Text", window_placement: "keep", text_limit: 1 },
+    arguments: { app: "Text", window_placement: "keep", text_limit: 1, initialize: false },
   });
   assert.deepEqual(native.calls[3], {
     name: "get_app_state",
-    arguments: { app: "Text", window_placement: "restore" },
+    arguments: { app: "Text", window_placement: "restore", initialize: false },
   });
   assert.deepEqual(native.calls[4], {
     name: "type_text",

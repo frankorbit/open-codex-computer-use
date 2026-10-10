@@ -1604,6 +1604,7 @@ final class OpenComputerUseKitTests: XCTestCase {
     func testColdLaunchDoesNotActivateOrHideApplication() {
         let configuration = AppDiscovery.backgroundLaunchConfiguration()
         XCTAssertFalse(configuration.activates)
+        XCTAssertFalse(configuration.createsNewApplicationInstance)
         XCTAssertFalse(configuration.hides)
     }
 

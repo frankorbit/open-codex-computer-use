@@ -36,7 +36,7 @@ The runtime exposes an asynchronous app-bound API:
 
 - \`await cua.getState({ emit? })\`: list current apps.
 - \`await cua.listApps({ emit? })\`: list current apps.
-- \`await cua.getApp(nameOrBundleID)\`: bind an app and emit its initial accessibility state.
+- \`await cua.getApp(nameOrBundleID)\`: initialize and bind an app; emit its initial text and available images once.
 - \`await app.getAXState({ emit?, textLimit?, maxTreeNodes?, maxTreeDepth?, windowPlacement? })\`
 - \`await app.getScreenshot({ emit? })\`
 - \`await app.getAXStateAndScreenshot(options?)\`
@@ -47,6 +47,10 @@ The runtime exposes an asynchronous app-bound API:
 - \`await app.pressKey(key, { keyMethod? })\`
 - \`await app.setValue(elementIndex, value)\`
 - \`await app.performSecondaryAction(elementIndex, action)\`
+
+Only getApp initializes the app: read an existing window, launch once in the background if no process is running, or reopen once in the background if a running app has no window. Bound observation methods never launch or reopen. Initialization retries only observation.
+
+If observation fails after opening, native keeps initialization pending. You may call \`await cua.getApp(nameOrBundleID)\` again even if no binding was returned: while pending, it only retries observation and cannot launch or reopen. Successful observation clears pending; a later new lifecycle may reopen through getApp. Preserve errors and never automatically replay prior input.
 
 After actions, call \`getAXState()\` in the same js invocation when the next decision depends on the updated UI. Re-derive element indexes from fresh state after navigation or layout changes. Prefer element indexes over coordinates. Open Computer Use keeps its existing local safety gates, including password-manager denial and explicit authorization for global pointer fallbacks.`;
 
@@ -261,13 +265,13 @@ export function createCuaApi(native, activeOutput) {
   function appBinding(app) {
     return Object.freeze({
       async getAXState(options = {}) {
-        const result = await call("get_app_state", { app, ...optionsToSnapshotArgs(options) });
+        const result = await call("get_app_state", { app, initialize: false, ...optionsToSnapshotArgs(options) });
         const text = toolResultText(result);
         await emitText(text, options);
         return text;
       },
       async getScreenshot(options = {}) {
-        const result = await call("get_app_state", { app, ...optionsToSnapshotArgs(options), text_limit: 1 });
+        const result = await call("get_app_state", { app, initialize: false, ...optionsToSnapshotArgs(options), text_limit: 1 });
         const image = toolResultImages(result)[0];
         if (!image) throw new Error(`Screenshot unavailable for ${app}`);
         const bytes = Buffer.from(image.data, "base64");
@@ -275,7 +279,7 @@ export function createCuaApi(native, activeOutput) {
         return bytes;
       },
       async getAXStateAndScreenshot(options = {}) {
-        const result = await call("get_app_state", { app, ...optionsToSnapshotArgs(options) });
+        const result = await call("get_app_state", { app, initialize: false, ...optionsToSnapshotArgs(options) });
         const state = toolResultText(result);
         const images = toolResultImages(result);
         await emitText(state, options);
@@ -320,8 +324,9 @@ export function createCuaApi(native, activeOutput) {
     },
     async getApp(app) {
       await emitDocs();
-      const result = await call("get_app_state", { app, text_limit: "max" });
+      const result = await call("get_app_state", { app, text_limit: "max", initialize: true });
       await emitText(toolResultText(result));
+      await emitImages(toolResultImages(result));
       return appBinding(app);
     },
     async rewriteDocumentation() { activeOutput().write(COMPUTER_USE_GUIDANCE, "cua.core"); },

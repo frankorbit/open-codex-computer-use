@@ -55,6 +55,7 @@ public final class ComputerUseToolDispatcher {
         case "list_apps":
             return service.listApps()
         case "get_app_state":
+            let placement = try parseWindowPlacement(optionalString("window_placement", in: arguments))
             return try service.getAppState(
                 app: requireString("app", in: arguments),
                 textLimit: try optionalTextLimit("text_limit", in: arguments) ?? .defaults,
@@ -62,7 +63,8 @@ public final class ComputerUseToolDispatcher {
                     maxNodeCount: try optionalPositiveInt("max_tree_nodes", in: arguments),
                     maxDepth: try optionalPositiveInt("max_tree_depth", in: arguments)
                 ),
-                windowPlacement: try parseWindowPlacement(optionalString("window_placement", in: arguments))
+                windowPlacement: placement,
+                initialize: try optionalBool("initialize", in: arguments) ?? (placement == .keep)
             )
         case "hover":
             return try service.hover(app: requireString("app", in: arguments), arguments: arguments)
@@ -199,6 +201,14 @@ public final class ComputerUseToolDispatcher {
         }
 
         return nil
+    }
+
+    private func optionalBool(_ key: String, in arguments: [String: Any]) throws -> Bool? {
+        guard let value = arguments[key] else { return nil }
+        guard let number = value as? NSNumber, CFGetTypeID(number) == CFBooleanGetTypeID() else {
+            throw ComputerUseError.invalidArguments("\(key) must be a boolean")
+        }
+        return number.boolValue
     }
 
     private func optionalPositiveInt(_ key: String, in arguments: [String: Any]) throws -> Int? {
