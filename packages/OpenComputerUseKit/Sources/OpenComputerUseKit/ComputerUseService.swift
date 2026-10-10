@@ -539,7 +539,10 @@ public final class ComputerUseService {
         var observationSucceeded = false
         defer {
             // 放置窗口或最终回读失败时，中间生成的快照也不能继续用于输入。
-            if !observationSucceeded { snapshotCache.invalidate(query: query) }
+            if !observationSucceeded {
+                snapshotCache.invalidate(query: query)
+                LiveWindowPreview.invalidate()
+            }
         }
         guard windowPlacement != .keep else {
             let snapshot = try observeWithoutActivation {
@@ -960,7 +963,9 @@ public final class ComputerUseService {
     }
 
     private func currentSnapshot(for query: String) throws -> AppSnapshot {
-        try snapshotCache.snapshot(for: query)
+        let snapshot = try snapshotCache.snapshot(for: query)
+        LiveWindowPreview.publish(snapshot)
+        return snapshot
     }
 
     @discardableResult
@@ -2167,6 +2172,7 @@ public final class ComputerUseService {
     }
 
     private func snapshotResult(for snapshot: AppSnapshot, style: SnapshotTextStyle) -> ToolCallResult {
+        LiveWindowPreview.publish(snapshot)
         var content = [ToolResultContentItem.text(snapshot.renderedText(style: style))]
         if let note = snapshot.screenshotNote { content.append(.text(note)) }
         if let screenshotData = snapshot.screenshotData {

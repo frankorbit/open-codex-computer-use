@@ -57,15 +57,58 @@ private enum SoftwareCursorGlyphColors {
 
 enum SoftwareCursorGlyphRenderer {
     nonisolated(unsafe) private static let referenceImage = loadReferenceCursorWindowImage()
+    /// 只缓存派生图片；主题按绘制时的环境读取，避免首次绘制锁死后续配置。
+    private static let todayReferenceImage = referenceImage.flatMap {
+        SoftwareCursorGlyphStyle.today.makeReferenceArtwork(from: $0)
+    }
 
     static func draw(
         in bounds: CGRect,
         context: CGContext,
         state: SoftwareCursorGlyphRenderState
     ) {
+        let style = SoftwareCursorGlyphStyle.resolve()
+        draw(
+            in: bounds,
+            context: context,
+            state: state,
+            style: style,
+            referenceArtwork: style == .today ? todayReferenceImage : referenceImage
+        )
+    }
+
+    static func draw(
+        in bounds: CGRect,
+        context: CGContext,
+        state: SoftwareCursorGlyphRenderState,
+        style: SoftwareCursorGlyphStyle,
+        referenceArtwork: NSImage?
+    ) {
+        guard let tint = style.tintColor else {
+            drawArtwork(in: bounds, context: context, state: state, style: style, referenceArtwork: referenceArtwork)
+            return
+        }
+        context.saveGState()
+        // 隔离合成只给光标及光晕着色，不影响底下的窗口画面。
+        context.beginTransparencyLayer(auxiliaryInfo: nil)
+        drawArtwork(in: bounds, context: context, state: state, style: style, referenceArtwork: referenceArtwork)
+        context.setBlendMode(.sourceIn)
+        context.setFillColor(tint.cgColor)
+        context.fill(bounds)
+        context.endTransparencyLayer()
+        context.restoreGState()
+    }
+
+    private static func drawArtwork(
+        in bounds: CGRect,
+        context: CGContext,
+        state: SoftwareCursorGlyphRenderState,
+        style: SoftwareCursorGlyphStyle,
+        referenceArtwork: NSImage?
+    ) {
         let drawingState = state.appKitDrawingState
 
-        if let referenceImage {
+        if let referenceImage = referenceArtwork {
             drawReferenceImage(
                 referenceImage,
                 in: bounds,
@@ -88,9 +131,8 @@ enum SoftwareCursorGlyphRenderer {
         drawFog(
             in: context,
             center: fogCenter,
-            pulse: pulse,
-            fogOpacity: state.fogOpacity,
-            fogScale: state.fogScale
+            state: drawingState,
+            haloOpacity: style.haloOpacity
         )
         drawPointer(
             in: context,
@@ -130,13 +172,16 @@ enum SoftwareCursorGlyphRenderer {
     private static func drawFog(
         in context: CGContext,
         center: CGPoint,
-        pulse: CGFloat,
-        fogOpacity: CGFloat,
-        fogScale: CGFloat
+        state: SoftwareCursorGlyphRenderState,
+        haloOpacity: CGFloat
     ) {
+        let pulse = state.clickProgress
+        let fogOpacity = state.fogOpacity
+        let fogScale = state.fogScale
         let radius = ((66 * fogScale) / 2) + (pulse * 1.2)
         let glowRadius = radius * (0.30 + (pulse * 0.025))
-        let opacityMultiplier = max(0.28, min(fogOpacity / 0.12, 2.2))
+        // 在原有动态范围限制后淡化光晕，避免下限抵消 Today 的强度设置。
+        let opacityMultiplier = max(0.28, min(fogOpacity / 0.12, 2.2)) * haloOpacity
         let colors = [
             NSColor(calibratedRed: 0.38, green: 0.36, blue: 0.35, alpha: (0.40 + (pulse * 0.02)) * opacityMultiplier).cgColor,
             NSColor(calibratedRed: 0.43, green: 0.41, blue: 0.40, alpha: (0.28 + (pulse * 0.015)) * opacityMultiplier).cgColor,

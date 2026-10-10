@@ -59,6 +59,10 @@
   - `tools/call`
 - `notifications/turn-ended` 是开源版显式的 turn boundary hook；收到后会清理当前进程里的 visual cursor overlay、occlusion keep-alive 和 agent display。CLI `open-computer-use turn-ended [payload]` 也会通过 macOS distributed notification 通知正在运行的 AppKit MCP / app-agent 进程执行同一类清理，用于接 Codex legacy notify 的 after-agent payload。stdio server 退出和 app-agent client connection 关闭也会执行该 session cleanup。
 
+### 宿主可选本地画中画
+
+嵌入式宿主可用 `OPEN_COMPUTER_USE_LIVE_PREVIEW=1` 启用本地 ScreenCaptureKit 单窗口画中画。其目标来自 OCU 实际快照，连续帧不会加入 MCP 响应或模型上下文；输入期间预览穿透鼠标，收起、切窗和会话结束独立清理。`OPEN_COMPUTER_USE_PREVIEW_SESSION` 将恢复/停止通知限定到对应宿主 run。`OPEN_COMPUTER_USE_VISUAL_CURSOR_THEME=today` 可独立启用 Today 蓝色光标和淡光晕，默认保留上游样式。详见[本地预览记录](histories/2026-10/20261010-2155-local-window-preview.md)。
+
 ### 3. Tool Service 层
 
 - `ComputerUseService` 负责把 Computer Use tool 请求映射到本地能力，`ComputerUseToolDispatcher` 则把 9 个 tool 的参数解析与 service 方法分发收敛成 MCP server 和 `open-computer-use call` 共用的一层。

@@ -134,6 +134,9 @@ public final class StdioMCPServer {
     public func endSession() {
         VisualCursorSupport.performOnMain {
             SoftwareCursorOverlay.reset()
+            if livePreviewEnabled(environment: ProcessInfo.processInfo.environment) {
+                LiveWindowPreview.shared.reset()
+            }
         }
         backgroundStateReset()
     }

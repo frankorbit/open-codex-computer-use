@@ -271,6 +271,7 @@ enum SoftwareCursorOverlay {
     }
 
     static func reset() {
+        clearPreviewCursor()
         stopIdleAnimation()
         cancelPendingHide()
         displayedTipPosition = nil
@@ -652,6 +653,7 @@ enum SoftwareCursorOverlay {
     }
 
     private static func hideOverlay() {
+        clearPreviewCursor()
         guard let panel else {
             return
         }
@@ -739,11 +741,27 @@ enum SoftwareCursorOverlay {
         cursorView.fogScale = renderState.fogScale
         cursorView.clickProgress = clickProgress
         cursorView.needsDisplay = true
+        if livePreviewEnabled(environment: ProcessInfo.processInfo.environment) {
+            LiveWindowPreview.shared.cursor(
+                tip: renderState.tipPosition, windowID: activeTargetWindow?.windowID,
+                state: SoftwareCursorGlyphRenderState(
+                    rotation: renderState.rotation, cursorBodyOffset: renderState.cursorBodyOffset,
+                    fogOffset: renderState.fogOffset, fogOpacity: renderState.fogOpacity,
+                    fogScale: renderState.fogScale, clickProgress: clickProgress
+                )
+            )
+        }
         displayedTipPosition = renderState.tipPosition
         writeObservationSnapshot(
             tipPosition: renderState.tipPosition,
             rotation: renderState.rotation
         )
+    }
+
+    private static func clearPreviewCursor() {
+        if livePreviewEnabled(environment: ProcessInfo.processInfo.environment) {
+            LiveWindowPreview.shared.cursor(tip: nil, windowID: nil, state: nil)
+        }
     }
 
     private static func writeObservationSnapshot(tipPosition: CGPoint?, rotation: CGFloat?) {

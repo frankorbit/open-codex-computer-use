@@ -44,6 +44,9 @@ public final class ComputerUseToolDispatcher {
     }
 
     public func callTool(name: String, arguments: [String: Any]) throws -> ToolCallResult {
+        let input = !["list_apps", "get_app_state"].contains(name)
+        if input { LiveWindowPreview.setInputActive(true) }
+        defer { if input { LiveWindowPreview.setInputActive(false) } }
         switch name {
         case "list_apps":
             return service.listApps()
