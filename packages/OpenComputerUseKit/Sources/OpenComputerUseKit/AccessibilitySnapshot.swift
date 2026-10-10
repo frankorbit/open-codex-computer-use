@@ -2275,3 +2275,20 @@ private extension CGRect {
         "x=\(Int(origin.x)), y=\(Int(origin.y)), w=\(Int(width)), h=\(Int(height))"
     }
 }
+
+// 冷启动完成时窗口可能尚未注册；只重试无窗口状态，不用激活/重开来掩盖观察失败。
+func observeWithoutActivation<T>(
+    wait: (TimeInterval) -> Void = Thread.sleep(forTimeInterval:),
+    build: () throws -> T
+) throws -> T {
+    for attempt in 0..<6 {
+        do {
+            return try build()
+        } catch ComputerUseError.stateUnavailable(let message)
+            where message == computerUseNoWindowFoundMessage && attempt < 5 {
+            wait(0.1)
+        }
+    }
+    // 最后一次 build 的错误已直接抛出，此处仅满足泛型返回的静态检查。
+    throw ComputerUseError.stateUnavailable(computerUseNoWindowFoundMessage)
+}

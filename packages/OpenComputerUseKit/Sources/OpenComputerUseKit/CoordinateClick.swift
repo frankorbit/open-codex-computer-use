@@ -75,3 +75,22 @@ func coordinateMouseMethod(button: MouseButtonKind, clickCount: Int, globalEnabl
     if globalEnabled { return .global }
     return button == .left && (1...2).contains(clickCount) ? .skyClick : .appPost
 }
+
+// 点击策略与拖拽/滚动的全局指针开关分离，宿主可只启用前台点击。
+func foregroundClicksEnabled(environment: [String: String]) -> Bool {
+    environment["OPEN_COMPUTER_USE_COORDINATE_CLICK_MODE"]?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "foreground"
+        || globalPointerFallbacksEnabled(environment: environment)
+}
+
+func dispatchForegroundClick(
+    validateTarget: () throws -> Void,
+    prepare: () throws -> Void,
+    validateReceiver: () throws -> Void,
+    submit: () throws -> Void
+) throws {
+    try validateTarget()
+    try prepare()
+    try validateReceiver()
+    // 输入一旦提交，无论返回或抛错都不换路重放。
+    try submit()
+}

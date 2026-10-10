@@ -226,3 +226,100 @@ final class CoordinateClickServiceTests: XCTestCase {
         XCTAssertEqual(mouseCount, 0)
     }
 }
+
+final class ForegroundClickTests: XCTestCase {
+    func testClickPolicyDoesNotEnableGlobalDragOrScrollGate() throws {
+        let environment = ["OPEN_COMPUTER_USE_COORDINATE_CLICK_MODE": "foreground"]
+        XCTAssertTrue(foregroundClicksEnabled(environment: environment))
+        XCTAssertFalse(globalPointerFallbacksEnabled(environment: environment))
+        XCTAssertEqual(dragDeliveryPath(environment: environment), .appPost)
+        XCTAssertNoThrow(try validateClickMethod(.global, hasElementIndex: false, environment: environment))
+        XCTAssertFalse(foregroundClicksEnabled(environment: [:]))
+        XCTAssertFalse(foregroundClicksEnabled(environment: ["OPEN_COMPUTER_USE_COORDINATE_CLICK_MODE": "invalid"]))
+    }
+
+    func testForegroundClickValidatesAfterActivationAndSubmitsOnce() throws {
+        var phases: [String] = []
+        try dispatchForegroundClick(
+            validateTarget: { phases.append("target") }, prepare: { phases.append("activate") },
+            validateReceiver: { phases.append("receiver") }, submit: { phases.append("input") }
+        )
+        XCTAssertEqual(phases, ["target", "activate", "receiver", "input"])
+    }
+
+    func testChangedGeometryOrReceiverAfterActivationPreventsInput() {
+        let oldBounds = CGRect(x: 10, y: 20, width: 300, height: 200)
+        var currentBounds = oldBounds
+        var inputs = 0
+        XCTAssertThrowsError(try dispatchForegroundClick(
+            validateTarget: {}, prepare: { currentBounds.origin.x += 1 },
+            validateReceiver: {
+                try validateCoordinateWindow(
+                    windowID: 7, pid: 123, bounds: oldBounds, point: CGPoint(x: 30, y: 40),
+                    windows: [[kCGWindowNumber as String: 7, kCGWindowOwnerPID as String: 123,
+                               kCGWindowBounds as String: currentBounds.dictionaryRepresentation,
+                               kCGWindowIsOnscreen as String: true]],
+                    requireUnoccludedPoint: true, spacesForWindow: { _ in [1] }
+                )
+            }, submit: { inputs += 1 }
+        ))
+        XCTAssertEqual(inputs, 0)
+    }
+
+    func testActivationFailureAndUnknownInputNeverRetry() {
+        for failure in ["target", "activate", "receiver", "input"] {
+            var phases: [String] = []
+            func perform(_ phase: String) throws {
+                phases.append(phase)
+                if phase == failure { throw ComputerUseError.message("unavailable or unknown") }
+            }
+            XCTAssertThrowsError(try dispatchForegroundClick(
+                validateTarget: { try perform("target") }, prepare: { try perform("activate") },
+                validateReceiver: { try perform("receiver") }, submit: { try perform("input") }
+            ))
+            let expected = Array(["target", "activate", "receiver", "input"].prefix(through: ["target", "activate", "receiver", "input"].firstIndex(of: failure)!))
+            XCTAssertEqual(phases, expected)
+        }
+    }
+}
+
+final class BackgroundObservationTests: XCTestCase {
+    func testExistingWindowNeedsNoDelay() throws {
+        let value = try observeWithoutActivation(wait: { _ in XCTFail("unexpected wait") }, build: { 42 })
+        XCTAssertEqual(value, 42)
+    }
+
+    func testNewWindowCanBecomeReadyWithoutActivationFallback() throws {
+        var attempts = 0
+        var delays: [TimeInterval] = []
+        let value = try observeWithoutActivation(wait: { delays.append($0) }) {
+            attempts += 1
+            if attempts < 3 { throw ComputerUseError.stateUnavailable(computerUseNoWindowFoundMessage) }
+            return 42
+        }
+        XCTAssertEqual(value, 42)
+        XCTAssertEqual(delays, [0.1, 0.1])
+    }
+
+    func testMissingWindowHasBoundedReadOnlyRetries() {
+        var attempts = 0
+        var waits = 0
+        XCTAssertThrowsError(try observeWithoutActivation(wait: { _ in waits += 1 }) { () -> Int in
+            attempts += 1
+            throw ComputerUseError.stateUnavailable(computerUseNoWindowFoundMessage)
+        })
+        XCTAssertEqual(attempts, 6)
+        XCTAssertEqual(waits, 5)
+    }
+
+    func testPermissionAndOtherFailuresDoNotRetry() {
+        for error in [ComputerUseError.permissionDenied("denied"), .stateUnavailable("stale"), .message("transport")] {
+            var attempts = 0
+            XCTAssertThrowsError(try observeWithoutActivation(wait: { _ in XCTFail("unexpected wait") }) { () -> Int in
+                attempts += 1
+                throw error
+            })
+            XCTAssertEqual(attempts, 1)
+        }
+    }
+}

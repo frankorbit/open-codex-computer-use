@@ -8,7 +8,9 @@ func validateCoordinateWindow(
     point: CGPoint,
     windows: [[String: Any]],
     requireUnoccludedPoint: Bool,
-    spacesForWindow: (CGWindowID) -> [UInt64]?
+    identityOnly: Bool = false,
+    spacesForWindow: (CGWindowID) -> [UInt64]?,
+    mouseReceiver: (CGPoint) -> CGWindowID? = { _ in nil }
 ) throws {
     var accepted = false
     defer { InputDiagnostics.event("window_validation", ["accepted": String(accepted), "window_id": String(windowID), "target_pid": String(pid), "require_unoccluded": String(requireUnoccludedPoint)]) }
@@ -27,14 +29,32 @@ func validateCoordinateWindow(
         throw ComputerUseError.stateUnavailable("Global pointer input requires an on-screen target window")
     }
 
-    // WindowServer 按前后顺序返回窗口。同 App 弹窗不能绕过；窗口定向输入允许其他 App 覆盖。
-    // 全局输入必须额外确认点击点未被其他 App 遮挡。忽略 helper 自己绘制的软件指针。
+    // 前台点击的激活前阶段只核对身份与几何；遮挡必须在精确窗口激活后再核对。
+    if identityOnly {
+        accepted = true
+        return
+    }
+
+    if requireUnoccludedPoint {
+        // 矩形重叠不代表会接收输入；AppKit 命中测试会排除透明区域和穿透窗口。
+        let receiver = mouseReceiver(point)
+        InputDiagnostics.event("mouse_receiver", [
+            "window_id": String(windowID), "receiver_window_id": receiver.map { String($0) } ?? "unknown",
+        ])
+        guard receiver == windowID else {
+            throw ComputerUseError.stateUnavailable("Mouse-down receiver does not match the snapshot window; observe again")
+        }
+        accepted = true
+        return
+    }
+
+    // 后台定向输入不使用前台命中结果；仍检查同 App、同 Space 的上层窗口。
     for above in windows[..<index] {
         guard let owner = above[kCGWindowOwnerPID as String] as? NSNumber else {
             throw ComputerUseError.stateUnavailable("Cannot verify a window above the coordinate target")
         }
         if owner.int32Value == getpid() { continue }
-        if !requireUnoccludedPoint && owner.int32Value != pid { continue }
+        if owner.int32Value != pid { continue }
         guard (above[kCGWindowIsOnscreen as String] as? NSNumber)?.boolValue == true,
               (above[kCGWindowAlpha as String] as? NSNumber)?.doubleValue ?? 1 > 0 else { continue }
         guard let aboveBounds = coordinateWindowBounds(above) else {

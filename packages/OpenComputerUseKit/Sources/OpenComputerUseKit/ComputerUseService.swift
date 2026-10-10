@@ -16,10 +16,6 @@ public enum ClickMethod: String, CaseIterable, Sendable {
     case global
 }
 
-func clickActionSnapshotRecoveryPolicy(for method: ClickMethod, coordinateInput: Bool = false) -> SnapshotRecoveryPolicy {
-    method == .skyClick || (method == .auto && coordinateInput) ? .readOnly : .allowActivation
-}
-
 func parseClickMethod(_ rawValue: String?) throws -> ClickMethod {
     let normalized = rawValue?
         .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -44,9 +40,9 @@ func validateClickMethod(
         throw ComputerUseError.message("click_method 'accessibility' requires element_index")
     }
 
-    if method == .global, !globalPointerFallbacksEnabled(environment: environment) {
+    if method == .global, !foregroundClicksEnabled(environment: environment) {
         throw ComputerUseError.message(
-            "click_method 'global' requires OPEN_COMPUTER_USE_ALLOW_GLOBAL_POINTER_FALLBACKS=1 because it may move the system pointer and change foreground focus"
+            "click_method 'global' requires OPEN_COMPUTER_USE_COORDINATE_CLICK_MODE=foreground or OPEN_COMPUTER_USE_ALLOW_GLOBAL_POINTER_FALLBACKS=1 because it moves the system pointer and changes foreground focus"
         )
     }
 }
@@ -54,10 +50,6 @@ func validateClickMethod(
 public enum KeyMethod: String, CaseIterable, Sendable {
     case auto
     case skyKey = "sky_key"
-}
-
-func keyActionSnapshotRecoveryPolicy(for method: KeyMethod) -> SnapshotRecoveryPolicy {
-    method == .skyKey ? .readOnly : .allowActivation
 }
 
 func parseKeyMethod(_ rawValue: String?) throws -> KeyMethod {
@@ -485,7 +477,8 @@ func shouldPreferContainingWebRowAXClickCandidate(
 }
 
 public final class ComputerUseService {
-    private var snapshotsByApp: [String: AppSnapshot] = [:]
+    private var snapshotCache = AppSnapshotCache()
+    private let snapshotDependencies: SnapshotDependencies
     // Read per call: the app agent applies the caller's OPEN_COMPUTER_USE_* variables
     // for the duration of each request.
     private var actionReadBack: Bool { actionReadBackEnabled(environment: ProcessInfo.processInfo.environment) }
@@ -494,11 +487,19 @@ public final class ComputerUseService {
 
     public init() {
         coordinateClickBackend = nil
+        snapshotDependencies = .live
     }
 
     init(snapshots: [String: AppSnapshot], coordinateClickBackend: CoordinateClickBackend) {
-        snapshotsByApp = snapshots
+        snapshotCache = AppSnapshotCache(snapshots: snapshots)
         self.coordinateClickBackend = coordinateClickBackend
+        snapshotDependencies = .live
+    }
+
+    init(snapshots: [String: AppSnapshot] = [:], snapshotDependencies: SnapshotDependencies) {
+        snapshotCache = AppSnapshotCache(snapshots: snapshots)
+        coordinateClickBackend = nil
+        self.snapshotDependencies = snapshotDependencies
     }
 
     /// An action's result reads the window back, so the app gets a beat to redraw
@@ -513,12 +514,12 @@ public final class ComputerUseService {
 
     /// The result an action returns: the after-action snapshot, or a short status
     /// when read-back is off.
-    private func actionResult(for query: String, recoveryPolicy: SnapshotRecoveryPolicy = .allowActivation) throws -> ToolCallResult {
+    private func actionResult(for query: String) throws -> ToolCallResult {
         guard actionReadBack else {
             return .text("ok")
         }
 
-        return snapshotResult(for: try refreshSnapshot(for: query, recoveryPolicy: recoveryPolicy), style: .actionResult)
+        return snapshotResult(for: try refreshSnapshot(for: query), style: .actionResult)
     }
 
     public func listApps() -> ToolCallResult {
@@ -535,12 +536,22 @@ public final class ComputerUseService {
         treeLimits: AccessibilityTreeLimits = .defaults,
         windowPlacement: WindowPlacement = .keep
     ) throws -> ToolCallResult {
+        var observationSucceeded = false
+        defer {
+            // 放置窗口或最终回读失败时，中间生成的快照也不能继续用于输入。
+            if !observationSucceeded { snapshotCache.invalidate(query: query) }
+        }
         guard windowPlacement != .keep else {
-            return snapshotResult(for: try refreshSnapshot(for: query, textLimit: textLimit, treeLimits: treeLimits), style: .fullState)
+            let snapshot = try observeWithoutActivation {
+                try refreshSnapshot(for: query, textLimit: textLimit, treeLimits: treeLimits, explicitObservation: true)
+            }
+            snapshotCache.recordObservation(snapshot, for: query)
+            observationSucceeded = true
+            return snapshotResult(for: snapshot, style: .fullState)
         }
 
         // Explicit placements never activate or raise; they only move the frame.
-        let snapshot = try refreshSnapshot(for: query, textLimit: textLimit, treeLimits: treeLimits, recoveryPolicy: .readOnly)
+        let snapshot = try refreshSnapshot(for: query, textLimit: textLimit, treeLimits: treeLimits, explicitObservation: true)
         guard snapshot.mode != .fixture else {
             throw ComputerUseError.message("window_placement '\(windowPlacement.rawValue)' is not supported for fixture apps")
         }
@@ -549,14 +560,17 @@ public final class ComputerUseService {
             guard let windowID = snapshot.targetWindowID, let windowElement = snapshot.windowElement else {
                 throw ComputerUseError.stateUnavailable("window_placement 'agent_display' requires a current target window. Run get_app_state again.")
             }
-            try AgentDisplay.shared.park(windowID: windowID, pid: snapshot.app.pid, window: windowElement)
+            try snapshotDependencies.parkWindow(windowID, snapshot.app.pid, windowElement)
         case .restore:
-            try AgentDisplay.shared.restoreAll(pid: snapshot.app.pid)
+            try snapshotDependencies.restoreWindows(snapshot.app.pid)
         case .keep:
             break
         }
 
-        return snapshotResult(for: try refreshSnapshot(for: query, textLimit: textLimit, treeLimits: treeLimits, recoveryPolicy: .readOnly), style: .fullState)
+        let finalSnapshot = try refreshSnapshot(for: query, textLimit: textLimit, treeLimits: treeLimits, explicitObservation: true)
+        snapshotCache.recordObservation(finalSnapshot, for: query)
+        observationSucceeded = true
+        return snapshotResult(for: finalSnapshot, style: .fullState)
     }
 
     public func click(
@@ -733,7 +747,7 @@ public final class ComputerUseService {
             throw ComputerUseError.invalidArguments("click requires either element_index or x/y")
         }
 
-        return try actionResult(for: query, recoveryPolicy: clickActionSnapshotRecoveryPolicy(for: clickMethod, coordinateInput: elementIndex == nil))
+        return try actionResult(for: query)
     }
 
     public func performSecondaryAction(app query: String, elementIndex: String, action: String) throws -> ToolCallResult {
@@ -843,7 +857,7 @@ public final class ComputerUseService {
             let target = try skyKeyTarget(for: snapshot)
             try InputSimulation.typeTextWithSkyLight(text, windowID: target.windowID, pid: target.pid)
             return snapshotResult(
-                for: try refreshSnapshot(for: query, recoveryPolicy: keyActionSnapshotRecoveryPolicy(for: keyMethod)),
+                for: try refreshSnapshot(for: query),
                 style: .actionResult
             )
         }
@@ -874,7 +888,7 @@ public final class ComputerUseService {
             let target = try skyKeyTarget(for: snapshot)
             try InputSimulation.pressKeyWithSkyLight(key, windowID: target.windowID, pid: target.pid)
             return snapshotResult(
-                for: try refreshSnapshot(for: query, recoveryPolicy: keyActionSnapshotRecoveryPolicy(for: keyMethod)),
+                for: try refreshSnapshot(for: query),
                 style: .actionResult
             )
         }
@@ -946,11 +960,7 @@ public final class ComputerUseService {
     }
 
     private func currentSnapshot(for query: String) throws -> AppSnapshot {
-        if let snapshot = snapshotsByApp[query.lowercased()] {
-            return snapshot
-        }
-
-        return try refreshSnapshot(for: query)
+        try snapshotCache.snapshot(for: query)
     }
 
     @discardableResult
@@ -958,27 +968,29 @@ public final class ComputerUseService {
         for query: String,
         textLimit: SnapshotTextLimit = .defaults,
         treeLimits: AccessibilityTreeLimits = .defaults,
-        recoveryPolicy: SnapshotRecoveryPolicy = .allowActivation
+        explicitObservation: Bool = false
     ) throws -> AppSnapshot {
-        let app = try AppDiscovery.resolve(query)
-        let snapshot = try SnapshotBuilder.build(
-            for: app,
-            textLimit: textLimit,
-            treeLimits: treeLimits,
-            recoveryPolicy: recoveryPolicy
-        )
-
-        let keys = Set([
-            query.lowercased(),
-            app.name.lowercased(),
-            (app.bundleIdentifier ?? "").lowercased(),
-        ].filter { !$0.isEmpty })
-
-        for key in keys {
-            snapshotsByApp[key] = snapshot
+        var resolvedApp: RunningAppDescriptor?
+        do {
+            let app: RunningAppDescriptor
+            if explicitObservation {
+                app = try snapshotDependencies.resolve(query)
+                // 显式观察完成前暂停该目标输入；放置阶段的中间快照不发布到缓存。
+                snapshotCache.invalidate(query: query, resolvedApp: app)
+            } else {
+                app = try currentSnapshot(for: query).app
+            }
+            resolvedApp = app
+            // 所有 service 回读都只观察，不能沿旧动作策略恢复焦点或重开窗口。
+            let snapshot = try snapshotDependencies.build(app, textLimit, treeLimits, .readOnly)
+            if !explicitObservation {
+                try snapshotCache.recordReadBack(snapshot, for: query)
+            }
+            return snapshot
+        } catch {
+            snapshotCache.invalidate(query: query, resolvedApp: resolvedApp)
+            throw error
         }
-
-        return snapshot
     }
 
     private func lookupElement(snapshot: AppSnapshot, index: String) throws -> ElementRecord {
@@ -1100,10 +1112,10 @@ public final class ComputerUseService {
             performMouse: { point, button, clickCount, snapshot in
                 let method = coordinateMouseMethod(
                     button: button, clickCount: clickCount,
-                    globalEnabled: globalPointerFallbacksEnabled(environment: ProcessInfo.processInfo.environment)
+                    globalEnabled: foregroundClicksEnabled(environment: ProcessInfo.processInfo.environment)
                 )
                 InputDiagnostics.event("mouse_route_selected", ["route": method.rawValue])
-                if method == .global || method == .appPost {
+                if method == .appPost {
                     try self.validateCoordinateSnapshot(at: point, snapshot: snapshot, requireUnoccludedPoint: true)
                 }
                 if method == .appPost {
@@ -1132,7 +1144,7 @@ public final class ComputerUseService {
     }
 
     private func validateCoordinateSnapshot(
-        at point: CGPoint, snapshot: AppSnapshot, requireUnoccludedPoint: Bool = false
+        at point: CGPoint, snapshot: AppSnapshot, requireUnoccludedPoint: Bool = false, identityOnly: Bool = false
     ) throws {
         guard !snapshot.app.runningApplication.isTerminated, !snapshot.app.runningApplication.isHidden,
               let windowID = snapshot.targetWindowID, let bounds = snapshot.windowBounds,
@@ -1141,8 +1153,9 @@ public final class ComputerUseService {
         }
         try validateCoordinateWindow(
             windowID: windowID, pid: snapshot.app.pid, bounds: bounds, point: point,
-            windows: windows, requireUnoccludedPoint: requireUnoccludedPoint,
-            spacesForWindow: { SkyLightSPI.shared.spaces(forWindow: $0) }
+            windows: windows, requireUnoccludedPoint: requireUnoccludedPoint, identityOnly: identityOnly,
+            spacesForWindow: { SkyLightSPI.shared.spaces(forWindow: $0) },
+            mouseReceiver: foregroundMouseReceiver
         )
     }
 
@@ -1297,28 +1310,12 @@ public final class ComputerUseService {
     }
 
     private func performAction(named action: String, on element: AXUIElement, availableActions: [String], repeatCount: Int = 1) throws -> Bool {
-        guard availableActions.contains(where: { $0.caseInsensitiveCompare(action) == .orderedSame }) else {
-            return false
-        }
-
-        let attempts = max(repeatCount, 1)
-        for index in 0..<attempts {
-            let result = AXUIElementPerformAction(element, action as CFString)
-            switch result {
-            case .success:
-                if index < attempts - 1 {
-                    Thread.sleep(forTimeInterval: 0.05)
-                }
-            case .attributeUnsupported where action.caseInsensitiveCompare("AXOpen") == .orderedSame:
-                return true
-            case .failure, .actionUnsupported, .attributeUnsupported, .cannotComplete, .noValue, .invalidUIElement, .illegalArgument:
-                return false
-            default:
-                throw ComputerUseError.message("AXUIElementPerformAction(\(action)) failed with \(result.rawValue)")
-            }
-        }
-
-        return true
+        try executeAXAction(
+            named: action,
+            availableActions: availableActions,
+            repeatCount: repeatCount,
+            perform: { AXUIElementPerformAction(element, action as CFString) }
+        ) == .completed
     }
 
     private func activateClickTarget(element: AXUIElement, availableActions: [String]) throws -> Bool {
@@ -2071,14 +2068,13 @@ public final class ComputerUseService {
     ) throws {
         let eventPoint = inputEventPoint(fromScreenStatePoint: point)
 
-        if globalPointerFallbacksEnabled(environment: ProcessInfo.processInfo.environment) {
+        if foregroundClicksEnabled(environment: ProcessInfo.processInfo.environment) {
             debugInputFallback(
                 tool: "click",
                 targetDescription: targetDescription,
                 snapshot: snapshot
             )
-            InputSimulation.prepareAppForGlobalPointerInput(snapshot.app)
-            try InputSimulation.clickGlobally(at: eventPoint, button: button, clickCount: clickCount)
+            try performForegroundClick(at: point, button: button, clickCount: clickCount, snapshot: snapshot)
             return
         }
 
@@ -2132,21 +2128,42 @@ public final class ComputerUseService {
                 )
             }
         case .global:
-            guard globalPointerFallbacksEnabled(environment: ProcessInfo.processInfo.environment) else {
-                throw ComputerUseError.message(
-                    "click_method 'global' requires OPEN_COMPUTER_USE_ALLOW_GLOBAL_POINTER_FALLBACKS=1 because it may move the system pointer and change foreground focus"
-                )
+            guard foregroundClicksEnabled(environment: ProcessInfo.processInfo.environment) else {
+                throw ComputerUseError.message("Foreground click is not enabled for this process")
             }
-            debugClickDecision("requested=global executed=global_hid target=\(targetDescription)")
-            InputSimulation.prepareAppForGlobalPointerInput(snapshot.app)
-            try InputDiagnostics.input(route: method, point: eventPoint) {
-                try InputSimulation.clickGlobally(at: eventPoint, button: button, clickCount: clickCount)
-            }
+            try performForegroundClick(at: point, button: button, clickCount: clickCount, snapshot: snapshot)
         case .auto, .accessibility:
             throw ComputerUseError.message(
                 "click_method '\(method.rawValue)' is not a direct mouse event method"
             )
         }
+    }
+
+    private func performForegroundClick(
+        at point: CGPoint, button: MouseButtonKind, clickCount: Int, snapshot: AppSnapshot
+    ) throws {
+        try dispatchForegroundClick(
+            validateTarget: { try self.validateCoordinateSnapshot(at: point, snapshot: snapshot, identityOnly: true) },
+            prepare: {
+                guard let window = snapshot.windowElement else {
+                    throw ComputerUseError.stateUnavailable("Snapshot window is unavailable; observe again")
+                }
+                try InputSimulation.prepareWindowForForegroundClick(snapshot.app, window: window)
+            },
+            validateReceiver: {
+                guard let window = snapshot.windowElement,
+                      InputSimulation.isForegroundWindow(snapshot.app, window: window) else {
+                    throw ComputerUseError.stateUnavailable("Foreground window changed; observe again before clicking")
+                }
+                // 激活可能切换 Space、移动窗口或打开弹窗，旧截图坐标不能直接复用。
+                try self.validateCoordinateSnapshot(at: point, snapshot: snapshot, requireUnoccludedPoint: true)
+            },
+            submit: {
+                try InputDiagnostics.input(route: .global, point: point) {
+                    try InputSimulation.clickGlobally(at: inputEventPoint(fromScreenStatePoint: point), button: button, clickCount: clickCount)
+                }
+            }
+        )
     }
 
     private func snapshotResult(for snapshot: AppSnapshot, style: SnapshotTextStyle) -> ToolCallResult {

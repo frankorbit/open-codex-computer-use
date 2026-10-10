@@ -12,13 +12,29 @@ final class CoordinateWindowTests: XCTestCase {
          kCGWindowIsOnscreen as String: NSNumber(value: visible), kCGWindowAlpha as String: NSNumber(value: alpha)]
     }
 
-    private func validate(_ windows: [[String: Any]], global: Bool = false, at location: CGPoint? = nil, spaces: @escaping (CGWindowID) -> [UInt64]? = { _ in [1] }) throws {
+    private func validate(_ windows: [[String: Any]], global: Bool = false, at location: CGPoint? = nil, receiver: CGWindowID? = 42, spaces: @escaping (CGWindowID) -> [UInt64]? = { _ in [1] }) throws {
         try validateCoordinateWindow(windowID: 42, pid: 1234, bounds: bounds, point: location ?? point,
-                                     windows: windows, requireUnoccludedPoint: global, spacesForWindow: spaces)
+                                     windows: windows, requireUnoccludedPoint: global, spacesForWindow: spaces,
+                                     mouseReceiver: { _ in receiver })
     }
 
     func testValidWindowDoesNotNeedAX() throws {
         try validate([window()])
+    }
+
+    func testForegroundPreflightCanRaiseCoveredWindowButFinalCheckStillRejectsCover() throws {
+        let covered = [window(id: 43), window()]
+        try validateCoordinateWindow(
+            windowID: 42, pid: 1234, bounds: bounds, point: point, windows: covered,
+            requireUnoccludedPoint: false, identityOnly: true, spacesForWindow: { _ in [1] }
+        )
+        XCTAssertThrowsError(try validate(covered, global: true, receiver: 43))
+        try validate([window(), window(id: 43)], global: true)
+        XCTAssertThrowsError(try validateCoordinateWindow(
+            windowID: 42, pid: 1234, bounds: bounds, point: point,
+            windows: [window(pid: 4321)], requireUnoccludedPoint: false, identityOnly: true,
+            spacesForWindow: { _ in [1] }
+        ))
     }
 
     func testMissingReusedOrTransparentWindowRejects() {
@@ -45,7 +61,7 @@ final class CoordinateWindowTests: XCTestCase {
     func testOtherAppCoverAllowsWindowDirectedButNotGlobalInput() throws {
         let windows = [window(id: 43, pid: 4321), window()]
         try validate(windows)
-        XCTAssertThrowsError(try validate(windows, global: true))
+        XCTAssertThrowsError(try validate(windows, global: true, receiver: 43))
     }
 
     func testInvisibleNonoverlappingAndBehindWindowsDoNotBlock() throws {
@@ -57,6 +73,46 @@ final class CoordinateWindowTests: XCTestCase {
 
     func testOwnCursorOverlayDoesNotBlock() throws {
         try validate([window(id: 43, pid: Int(getpid())), window()], global: true)
+    }
+
+    func testClickThroughDockRectangleDoesNotBlockActualTargetReceiver() throws {
+        var overlay = window(id: 56, pid: 800, rect: CGRect(x: -1000, y: 0, width: 2512, height: 982))
+        overlay[kCGWindowLayer as String] = NSNumber(value: 20)
+        // Dock 全屏矩形仍在列表里；真正接收 mouseDown 的是目标窗口。
+        try validate([overlay, window()], global: true, receiver: 42, spaces: { _ in nil })
+        XCTAssertThrowsError(try validate([overlay, window()], global: true, receiver: 56))
+    }
+
+    func testUnknownSiblingAndHelperReceiversRejectBeforeInput() {
+        for receiver: CGWindowID? in [nil, 43, 99] {
+            XCTAssertThrowsError(try validate([window(id: 99, pid: Int(getpid())), window(id: 43), window()],
+                                              global: true, receiver: receiver))
+        }
+    }
+
+    func testReceiverMatchCannotBypassTargetIdentityOrGeometry() {
+        XCTAssertThrowsError(try validate([window(pid: 9876)], global: true))
+        XCTAssertThrowsError(try validate([window(rect: bounds.offsetBy(dx: 1, dy: 0))], global: true))
+    }
+
+    func testReceiverValidationGatesForegroundSubmissionWithoutRetry() throws {
+        for receiver: CGWindowID? in [42, 56, nil] {
+            var inputs = 0
+            var checks = 0
+            let click = {
+                try dispatchForegroundClick(
+                    validateTarget: {}, prepare: {},
+                    validateReceiver: {
+                        checks += 1
+                        try self.validate([self.window(id: 56, pid: 800), self.window()], global: true, receiver: receiver)
+                    },
+                    submit: { inputs += 1 }
+                )
+            }
+            if receiver == 42 { try click() } else { XCTAssertThrowsError(try click()) }
+            XCTAssertEqual(checks, 1)
+            XCTAssertEqual(inputs, receiver == 42 ? 1 : 0)
+        }
     }
 
     func testDifferentSpacesAtSameCoordinatesDoNotObstruct() throws {
@@ -99,11 +155,6 @@ final class CoordinateWindowTests: XCTestCase {
             performMouse: { mouseCount += 1 }
         )
         XCTAssertEqual(mouseCount, 1)
-    }
-
-    func testCoordinateAutoReadbackNeverActivatesOrReopensWindow() {
-        XCTAssertEqual(clickActionSnapshotRecoveryPolicy(for: .auto, coordinateInput: true), .readOnly)
-        XCTAssertEqual(clickActionSnapshotRecoveryPolicy(for: .auto, coordinateInput: false), .allowActivation)
     }
 
     func testMouseRouteSelectedBeforeAnyInput() {

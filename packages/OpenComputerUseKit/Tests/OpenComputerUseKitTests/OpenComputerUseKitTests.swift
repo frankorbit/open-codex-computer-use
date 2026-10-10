@@ -1554,17 +1554,6 @@ final class OpenComputerUseKitTests: XCTestCase {
         XCTAssertEqual(try parseClickMethod("GLOBAL"), .global)
     }
 
-    func testOnlySkyClickUsesReadOnlyActionSnapshotRefresh() {
-        XCTAssertEqual(clickActionSnapshotRecoveryPolicy(for: .skyClick), .readOnly)
-
-        for method in ClickMethod.allCases where method != .skyClick {
-            XCTAssertEqual(
-                clickActionSnapshotRecoveryPolicy(for: method),
-                .allowActivation
-            )
-        }
-    }
-
     func testFixtureStateFocusProbeFieldsRemainBackwardCompatible() throws {
         let legacyPayload = #"""
         {
@@ -1612,13 +1601,19 @@ final class OpenComputerUseKitTests: XCTestCase {
         )
     }
 
+    func testColdLaunchDoesNotActivateOrHideApplication() {
+        let configuration = AppDiscovery.backgroundLaunchConfiguration()
+        XCTAssertFalse(configuration.activates)
+        XCTAssertFalse(configuration.hides)
+    }
+
     func testGlobalClickMethodRequiresExplicitPointerAuthorization() {
         XCTAssertThrowsError(
             try validateClickMethod(.global, hasElementIndex: false, environment: [:])
         ) { error in
             XCTAssertEqual(
                 (error as? ComputerUseError)?.errorDescription,
-                "click_method 'global' requires OPEN_COMPUTER_USE_ALLOW_GLOBAL_POINTER_FALLBACKS=1 because it may move the system pointer and change foreground focus"
+                "click_method 'global' requires OPEN_COMPUTER_USE_COORDINATE_CLICK_MODE=foreground or OPEN_COMPUTER_USE_ALLOW_GLOBAL_POINTER_FALLBACKS=1 because it moves the system pointer and changes foreground focus"
             )
         }
 
@@ -1912,8 +1907,6 @@ final class OpenComputerUseKitTests: XCTestCase {
                 "Invalid key_method 'global'. Expected one of: auto, sky_key"
             )
         }
-        XCTAssertEqual(keyActionSnapshotRecoveryPolicy(for: .skyKey), .readOnly)
-        XCTAssertEqual(keyActionSnapshotRecoveryPolicy(for: .auto), .allowActivation)
     }
 
     func testKeyboardToolSchemasExposeKeyMethod() {

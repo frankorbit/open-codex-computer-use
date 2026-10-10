@@ -68,7 +68,7 @@
 - npm bin 当前本身通过 `#!/usr/bin/env node` 启动，因此完全没有 Node 的 shell 无法进入 help/capability 检测；launcher 启动后会复用 `process.execPath`，不会再次从 PATH 解析 Node。若未来要求零 Node 前置，应把最外层入口替换成 native bootstrap 或随包分发 Node。
 - 这是增量迁移：`open-computer-use mcp` 仍是原生 9-tool compatibility surface，已有 CLI、其他 MCP host 和 smoke 不需要切换。
 - `list_apps` 通过 Spotlight metadata query 拉取标准 application 目录里的 app bundle，并读取 `kMDItemUseCount` / `kMDItemLastUsedDate_Ranking` 这类系统元数据；再与 `NSWorkspace` 的运行态 app 合并，输出“当前运行中 + 近 14 天用过”的视图。
-- `get_app_state` 优先走真实 AX / 窗口截图；真实 app 必须同时有未最小化的 `AXWindow` 和可匹配的 on-screen `CGWindow`。如果目标 app 只是隐藏或暂时没有 on-screen window，会先 best-effort unhide / activate / `open -b` / `AXRaise` 并短暂重试，以贴近官方 `computer-use` 会把 Lark / Electron 窗口拉回再采集的行为；恢复后仍无法匹配时返回官方风格的 `Apple event error -10005: cgWindowNotFound`，不再把 application 根节点或无截图窗口伪装成可操作状态。当目标是仓库内 fixture app 时，回退到 fixture 导出的合成状态。真实 AX tree 默认在 macOS、Linux、Windows 上最多渲染 1200 个节点、64 层深度；显式 `get_app_state` / `snapshot` 可通过 `max_tree_nodes` / `max_tree_depth` 覆盖预算，action tools 的刷新结果仍使用默认预算。snapshot 文本默认截断到 500 字符；显式 `get_app_state` / `snapshot` 可通过 `text_limit` 正整数或 `"max"` 覆盖，action tools 的刷新结果仍使用 500 字符默认值。对 Electron/WebView 这类深层 UI 会压缩空 `AXGroup` / `AXUnknown` wrapper、过滤 `AXScrollToVisible` 噪音和空字符串属性，避免 action-critical 的输入框被无语义容器挤出节点预算；但通用节点中的 `AXPress` / `AXConfirm` / `AXOpen` 子节点会形成文本摘要边界，避免多个可点击选项被合并成一个 container。这类动作节点如果 frame 有效、尺寸紧凑且不包含带 URL 的 `AXLink` 后代，会保留为带窗口相对 `Frame` 的 `button`，并用短文本后代作为按钮摘要，让 icon-only 和文字 Web 控件都能获得可区分的 `element_index`；包含带 URL 的 `AXLink` 后代时保留通用 wrapper 和链接子节点，避免导航链接被摘要吞掉。对原生 open panel / Finder column view 这类把内容放在 `AXContents` / `AXVisibleChildren` 里的控件，也会把可见文件项纳入元素树。
+- `get_app_state` 优先走真实 AX / 窗口截图；真实 app 必须同时有未最小化的 `AXWindow` 和可匹配的 on-screen `CGWindow`。显式观察不激活或抬升窗口；冷启动使用非激活配置，窗口尚未就绪时只对无窗口错误进行有界只读重试，仍无法匹配则返回 `Apple event error -10005: cgWindowNotFound`，不把 application 根节点或无截图窗口伪装成可操作状态。当目标是仓库内 fixture app 时，回退到 fixture 导出的合成状态。真实 AX tree 默认在 macOS、Linux、Windows 上最多渲染 1200 个节点、64 层深度；显式 `get_app_state` / `snapshot` 可通过 `max_tree_nodes` / `max_tree_depth` 覆盖预算，action tools 的刷新结果仍使用默认预算。snapshot 文本默认截断到 500 字符；显式 `get_app_state` / `snapshot` 可通过 `text_limit` 正整数或 `"max"` 覆盖，action tools 的刷新结果仍使用 500 字符默认值。对 Electron/WebView 这类深层 UI 会压缩空 `AXGroup` / `AXUnknown` wrapper、过滤 `AXScrollToVisible` 噪音和空字符串属性，避免 action-critical 的输入框被无语义容器挤出节点预算；但通用节点中的 `AXPress` / `AXConfirm` / `AXOpen` 子节点会形成文本摘要边界，避免多个可点击选项被合并成一个 container。这类动作节点如果 frame 有效、尺寸紧凑且不包含带 URL 的 `AXLink` 后代，会保留为带窗口相对 `Frame` 的 `button`，并用短文本后代作为按钮摘要，让 icon-only 和文字 Web 控件都能获得可区分的 `element_index`；包含带 URL 的 `AXLink` 后代时保留通用 wrapper 和链接子节点，避免导航链接被摘要吞掉。对原生 open panel / Finder column view 这类把内容放在 `AXContents` / `AXVisibleChildren` 里的控件，也会把可见文件项纳入元素树。
 - MCP `tools/list` 的 description / input schema 当前按官方 `computer-use` 的 9 个 tools 文案和参数面收敛，尽量减少 host 侧提示词和 tool surface 偏差。
 - JS REPL 的 API 和当前官方 code-first 形态对齐到异步 app binding，而不是把离散 tools 简单包成同步函数。snapshot 的 `windowPlacement` 以及 keyboard action 的 `keyMethod` 会转换成 native tool 的 snake_case 参数。实现不复制或运行 proprietary `@oai/*` package；协议和行为记录在 `docs/references/js-repl.md`。
 - `open-computer-use call <tool> --args '{...}'` 会直接输出 MCP-style JSON result；`open-computer-use call --calls '[...]'` / `--calls-file <path>` 会在同一进程里顺序执行 JSON 数组里的 tool calls，并复用同一个 `ComputerUseService` 内存态，因此 `get_app_state` 之后的 action tool 可以继续使用同一轮 snapshot 的 `element_index`。序列执行默认会在成功的相邻操作之间 sleep 1 秒，也可以用 `--sleep <seconds>` 覆盖；遇到 `isError=true` 的 tool result 后停止。
@@ -178,7 +178,7 @@ macOS screenshot 在每轮捕获读取用户 JSON 配置，优先级为 ENV > �
 
 ## Fork 的坐标点击修正
 
-macOS 坐标 `auto` 点击只对实时命中、属于当前窗口且包含点击点的直接控件执行 AXPress（右键为 AXShowMenu）。不会搜索根窗口的可点击后代，也不会选择祖先列表项。窗口有效性独立通过 WindowServer 校验：ID、PID 和几何保持一致，进程未隐藏；同 App、同 Space 的上层窗口不能遮挡点击点。定向输入允许其他 App 覆盖与其他 Space，只有 global 额外要求 on-screen。AX 没有元素或未实现命中查询时仍可走鼠标；通信错误拒绝输入。AX 窗口归属未知只走鼠标，明确不匹配则拒绝。鼠标左键单击/双击使用 sky_click，其余沿 app_post；显式开启全局指针时走 global，并要求点击点不被其他 App 遮挡。窗口在查询前和发送输入前各验证一次。AX 或鼠标发出后失败不换路重放，坐标 auto 回读只读，不激活/重开窗口。元素索引点击和显式点击方法保持原行为。hit test 使用窗口局部坐标加窗口原点，截图缩放仅发生一次。
+macOS 坐标 `auto` 点击只对实时命中、属于当前窗口且包含点击点的直接控件执行 AXPress（右键为 AXShowMenu）。不会搜索根窗口的可点击后代，也不会选择祖先列表项。窗口有效性独立通过 WindowServer 校验：ID、PID 和几何保持一致，进程未隐藏；同 App、同 Space 的上层窗口不能遮挡点击点。定向输入允许其他 App 覆盖与其他 Space，只有 global 额外要求 on-screen。AX 没有元素或未实现命中查询时仍可走鼠标；通信错误拒绝输入。AX 窗口归属未知只走鼠标，明确不匹配则拒绝。鼠标左键单击/双击使用 sky_click，其余沿 app_post；显式开启全局指针时走 global，并要求点击点不被其他 App 遮挡。窗口在查询前和发送输入前各验证一次。AX 或鼠标发出后失败不换路重放，坐标 auto 回读只读，不激活/重开窗口。元素索引有效 AX 点击和显式定向点击保留；前台鼠标点击按下文专用策略执行。hit test 使用窗口局部坐标加窗口原点，截图缩放仅发生一次。
 
 相关回归位于 `CoordinateClickTests.swift`；真实第三方 App 的命中结果和鼠标投递效果仍需 GUI 验收。
 
@@ -187,3 +187,17 @@ macOS 坐标 `auto` 点击只对实时命中、属于当前窗口且包含点击
 ### 输入诊断
 
 click MCP 回执中的 `_meta.ocuDiagnostic` 关联 `ai.today.ocu / input` 的 OSLog notice。同步调用范围内记录坐标映射、窗口校验、选路和事件发送步骤，仅保留数字和固定状态标签。returned 表示调用返回，输入效果仍为 unverified；日志不证明目标应用消费了事件。宿主不必捕获可能含正文的 stderr。
+
+### 点击专用前台策略
+
+宿主可设置 `OPEN_COMPUTER_USE_COORDINATE_CLICK_MODE=foreground`，仅启用点击的全局 HID 路径。`auto` 仍先使用可靠命中控件的 AX 动作；需要鼠标时，绑定快照中的准确窗口，激活后重新检查前台窗口、几何、Space 和点击点遮挡。失效则要求重新观察，不自动重试。此开关不启用全局滚动或拖拽，也不改变显式 `sky_click` / `app_post` 的选择。
+
+窗口准备只允许 AXRaise 绑定窗口及必要的 App 激活，不使用 `activateAllWindows`。有效后台 AX 动作与观察无需为此激活 App。事件投递成功仍需调用方观察实际界面结果。
+
+普通 `get_app_state` 现在使用只读恢复策略；冷启动配置 `activates=false`。窗口尚未注册时，仅对明确的无窗口错误最多等待五次 100ms 后再读，不调用 activate/raise/open 恢复。隐藏、最小化、无可观察窗口会明确失败；普通动作回读同样不执行激活恢复。观察失败会废弃该目标所有别名的输入快照；输入缓存缺失时必须先显式观察，不能隐式刷新后继续输入。后台能力不等于保证目标 App 自身永不改变焦点。
+
+### 复审修正：未知动作、实际接收窗口与失效快照
+
+- 元素索引路径只有动作未列于可用 AX actions 时才允许继续选路；一旦调用 AX，非成功回执终止本次输入，包括重复动作的中途失败，不再尝试候选元素或 HID。
+- 前台点击最终以 `NSWindow.windowNumber(at:belowWindowWithWindowNumber:)` 确认 mouse-down 实际接收窗口，查询使用转换后的 AppKit 屏幕坐标并从最上层开始。它按系统命中规则跳过透明区域和忽略鼠标事件的窗口，不按 Dock/helper 进程放行。返回空、其他窗口或无法映射屏幕时拒绝输入；ID、PID、几何和前台焦点检查保留。后台定向输入仍保留同 App/同 Space 遮挡检查。
+- AppKit API 依据：[Apple 鼠标按下命中查询文档](https://developer.apple.com/documentation/appkit/nswindow/windownumber(at:belowwindowwithwindownumber:))。这些自动化回归不代替腾讯会议、Dock 和多显示器的真实界面验收。

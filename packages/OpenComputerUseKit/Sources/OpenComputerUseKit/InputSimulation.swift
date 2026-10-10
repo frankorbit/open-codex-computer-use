@@ -55,6 +55,37 @@ enum InputSimulation {
         Thread.sleep(forTimeInterval: 0.25)
     }
 
+    static func isForegroundWindow(_ app: RunningAppDescriptor, window: AXUIElement) -> Bool {
+        guard !app.runningApplication.isTerminated,
+              NSWorkspace.shared.frontmostApplication?.processIdentifier == app.pid,
+              let focused = copyElement(AXUIElementCreateApplication(app.pid), attribute: kAXFocusedWindowAttribute) else { return false }
+        return CFEqual(focused, window)
+    }
+
+    static func prepareWindowForForegroundClick(_ app: RunningAppDescriptor, window: AXUIElement) throws {
+        InputDiagnostics.event("foreground_prepare", ["already_focused": String(isForegroundWindow(app, window: window)), "target_pid": String(app.pid)])
+        if isForegroundWindow(app, window: window) { return }
+        var owner: pid_t = 0
+        guard AXUIElementGetPid(window, &owner) == .success, owner == app.pid,
+              !app.runningApplication.isTerminated else {
+            throw ComputerUseError.stateUnavailable("Foreground click window identity is stale; observe again")
+        }
+        // 仅激活快照绑定的窗口，不重新挑选 preferredWindow，也不激活同 App 全部窗口。
+        if NSWorkspace.shared.frontmostApplication?.processIdentifier != app.pid {
+            _ = app.runningApplication.activate(options: [])
+        }
+        let raised = AXUIElementPerformAction(window, kAXRaiseAction as CFString)
+        guard raised == .success else {
+            throw ComputerUseError.stateUnavailable("Could not raise the snapshot window; observe again")
+        }
+        let deadline = ProcessInfo.processInfo.systemUptime + 0.5
+        repeat {
+            if isForegroundWindow(app, window: window) { return }
+            Thread.sleep(forTimeInterval: 0.02)
+        } while ProcessInfo.processInfo.systemUptime < deadline
+        throw ComputerUseError.stateUnavailable("Snapshot window did not become foreground; observe again")
+    }
+
     static func clickGlobally(at point: CGPoint, button: MouseButtonKind, clickCount: Int) throws {
         guard let source = CGEventSource(stateID: .hidSystemState) else {
             throw ComputerUseError.message("Failed to create HID event source.")

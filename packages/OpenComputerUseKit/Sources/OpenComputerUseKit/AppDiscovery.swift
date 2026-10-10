@@ -360,8 +360,15 @@ enum AppDiscovery {
         return nil
     }
 
-    private static func openApplication(at appURL: URL) throws {
+    static func backgroundLaunchConfiguration() -> NSWorkspace.OpenConfiguration {
         let configuration = NSWorkspace.OpenConfiguration()
+        // 启动只负责提供可观察窗口，不抢占当前用户的前台应用。
+        configuration.activates = false
+        return configuration
+    }
+
+    private static func openApplication(at appURL: URL) throws {
+        let configuration = backgroundLaunchConfiguration()
         let semaphore = DispatchSemaphore(value: 0)
         let errorBox = LaunchErrorBox()
 

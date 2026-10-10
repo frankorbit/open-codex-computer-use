@@ -46,7 +46,7 @@ public enum ToolDefinitions {
                         enumValues: ["left", "right", "middle"]
                     ),
                     "click_method": stringProperty(
-                        description: "Click implementation: auto (default), accessibility, app_post, sky_click, or global. Accessibility requires element_index. app_post sends a public event directly to the target app. sky_click uses the macOS SkyLight background window path. Global may move the system pointer and requires OPEN_COMPUTER_USE_ALLOW_GLOBAL_POINTER_FALLBACKS=1.",
+                        description: "Click implementation: auto (default), accessibility, app_post, sky_click, or global. Accessibility requires element_index. app_post sends a public event directly to the target app. sky_click uses the macOS SkyLight background window path. Global may move the system pointer and requires OPEN_COMPUTER_USE_COORDINATE_CLICK_MODE=foreground or OPEN_COMPUTER_USE_ALLOW_GLOBAL_POINTER_FALLBACKS=1. In foreground click mode, auto keeps usable AX actions in the background and uses foreground HID only when mouse input is needed.",
                         enumValues: ClickMethod.allCases.map(\.rawValue)
                     ),
                 ],
