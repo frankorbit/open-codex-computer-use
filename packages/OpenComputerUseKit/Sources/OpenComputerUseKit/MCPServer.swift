@@ -132,6 +132,7 @@ public final class StdioMCPServer {
     /// connections call this explicitly because they use `handle(line:)`
     /// instead of the stdio `run()` loop.
     public func endSession() {
+        dispatcher.discardHoverPopups()
         VisualCursorSupport.performOnMain {
             SoftwareCursorOverlay.reset()
             if livePreviewEnabled(environment: ProcessInfo.processInfo.environment) {

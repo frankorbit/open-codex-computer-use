@@ -478,6 +478,7 @@ func shouldPreferContainingWebRowAXClickCandidate(
 
 public final class ComputerUseService {
     private var snapshotCache = AppSnapshotCache()
+    private var hoverPopupCache = HoverPopupCache()
     private let snapshotDependencies: SnapshotDependencies
     // Read per call: the app agent applies the caller's OPEN_COMPUTER_USE_* variables
     // for the duration of each request.
@@ -529,6 +530,10 @@ public final class ComputerUseService {
         let request = try HoverRequest(arguments: arguments)
         let snapshot = try currentSnapshot(for: query)
         do {
+            if case .observation = request.target {
+                // 已打开的弹层只读采集，不能先激活主窗口或发送鼠标事件。
+                return try popupObservationResult(for: query)
+            }
             let target = try hoverTarget(request, snapshot: snapshot)
             let point = target.point
             return try dispatchForegroundHover(
@@ -559,8 +564,47 @@ public final class ComputerUseService {
                 dwell: { Thread.sleep(forTimeInterval: Double(request.durationMilliseconds) / 1000) },
                 readBack: {
                     // hover 总是回读，不能受普通动作的 read-back 开关影响。
-                    self.snapshotResult(for: try self.refreshSnapshot(for: query), style: .actionResult)
+                    try self.popupObservationResult(for: query)
                 }
+            )
+        } catch {
+            snapshotCache.invalidate(query: query, resolvedApp: snapshot.app)
+            LiveWindowPreview.invalidate()
+            throw error
+        }
+    }
+
+    private func popupObservationResult(for query: String) throws -> ToolCallResult {
+        let fresh = try refreshSnapshot(for: query)
+        let popups = snapshotDependencies.captureHoverPopups(fresh)
+        hoverPopupCache.record(popups, snapshot: fresh, now: ProcessInfo.processInfo.systemUptime)
+        let main = snapshotResult(for: fresh, style: .actionResult)
+        return ToolCallResult(content: main.content + popups.flatMap(\.content))
+    }
+
+    func discardHoverPopups() { hoverPopupCache.clear() }
+
+    func clickPopup(app query: String, arguments: [String: Any]) throws -> ToolCallResult {
+        // 参数失败和授权开关变化也必须消耗旧观察。
+        var pending = hoverPopupCache
+        hoverPopupCache.clear()
+        let request = try HoverPopupClickRequest(arguments: arguments)
+        let lease = try pending.take(request.token)
+        guard foregroundHoverEnabled(environment: ProcessInfo.processInfo.environment) else {
+            throw ComputerUseError.unsupportedTool("hover popup click")
+        }
+        try validateClickMethod(.global, hasElementIndex: false, environment: ProcessInfo.processInfo.environment)
+        let snapshot = try currentSnapshot(for: query)
+        let point = try lease.globalPoint(for: request.point, snapshot: snapshot, now: ProcessInfo.processInfo.systemUptime)
+        do {
+            return try dispatchPopupClick(
+                validate: { try validateHoverPopupReceiver(lease.popup, point: point, snapshot: snapshot) },
+                submit: {
+                    try InputDiagnostics.input(route: .global, point: point) {
+                        try InputSimulation.clickGlobally(at: inputEventPoint(fromScreenStatePoint: point), button: .left, clickCount: 1)
+                    }
+                },
+                readBack: { self.snapshotResult(for: try self.refreshSnapshot(for: query), style: .actionResult) }
             )
         } catch {
             snapshotCache.invalidate(query: query, resolvedApp: snapshot.app)
@@ -573,6 +617,8 @@ public final class ComputerUseService {
         _ request: HoverRequest, snapshot: AppSnapshot
     ) throws -> (point: CGPoint, validate: () throws -> Void) {
         switch request.target {
+        case .observation:
+            throw ComputerUseError.invalidArguments("Read-only popup observation has no input target")
         case let .element(index):
             let record = try lookupElement(snapshot: snapshot, index: index)
             guard let center = try globalPoint(for: record, snapshot: snapshot),
@@ -1035,6 +1081,7 @@ public final class ComputerUseService {
     }
 
     private func currentSnapshot(for query: String) throws -> AppSnapshot {
+        hoverPopupCache.clear()
         let snapshot = try snapshotCache.snapshot(for: query)
         LiveWindowPreview.publish(snapshot)
         return snapshot
@@ -1047,6 +1094,7 @@ public final class ComputerUseService {
         treeLimits: AccessibilityTreeLimits = .defaults,
         explicitObservation: Bool = false
     ) throws -> AppSnapshot {
+        hoverPopupCache.clear()
         var resolvedApp: RunningAppDescriptor?
         do {
             let app: RunningAppDescriptor

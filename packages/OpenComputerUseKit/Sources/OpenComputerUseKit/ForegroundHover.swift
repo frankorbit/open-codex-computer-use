@@ -9,6 +9,7 @@ func foregroundHoverEnabled(environment: [String: String]) -> Bool {
 
 struct HoverRequest {
     enum Target {
+        case observation
         case element(String)
         case coordinates(Double, Double)
     }
@@ -17,6 +18,17 @@ struct HoverRequest {
     let durationMilliseconds: Int
 
     init(arguments: [String: Any]) throws {
+        if let flag = arguments["observe_only"] {
+            guard let value = flag as? NSNumber, CFGetTypeID(value) == CFBooleanGetTypeID(), value.boolValue,
+                  arguments["element_index"] == nil, arguments["x"] == nil, arguments["y"] == nil,
+                  arguments["duration_ms"] == nil
+            else {
+                throw ComputerUseError.invalidArguments("observe_only requires true and no input target or duration")
+            }
+            target = .observation
+            durationMilliseconds = 0
+            return
+        }
         if let rawIndex = arguments["element_index"] {
             guard arguments["x"] == nil, arguments["y"] == nil,
                   !(rawIndex is NSNumber && CFGetTypeID(rawIndex as CFTypeRef) == CFBooleanGetTypeID()),
@@ -67,7 +79,8 @@ func dispatchForegroundHover<Result>(
     } catch {
         throw ComputerUseError
             .message(
-                "Hover input may have occurred; observe before further input. No retry was sent. \(error.localizedDescription)"
+                "Hover input may have occurred; observe before further input. "
+                    + "No retry was sent. \(error.localizedDescription)"
             )
     }
 }
@@ -111,21 +124,34 @@ extension ToolDefinitions {
         ToolDefinition(
             name: "hover",
             description: "Move the real pointer over an observed element or screenshot point; may foreground it. "
-                + "Returns fresh state: inspect before clicking. Does not click or prove a menu opened.",
+                + "Returns fresh state: inspect before clicking. "
+                + "observe_only=true captures existing popups without input. "
+                + "Does not click or prove a menu opened.",
             annotations: ["readOnlyHint": false, "destructiveHint": false, "openWorldHint": true],
             inputSchema: [
                 "type": "object", "additionalProperties": false,
                 "properties": [
                     "app": ["type": "string"],
+                    "observe_only": ["type": "boolean", "const": true],
                     "element_index": ["type": "string"],
                     "x": ["type": "number"], "y": ["type": "number"],
-                    "duration_ms": ["type": "integer", "minimum": 0, "maximum": 2000, "default": 500],
+                    "duration_ms": ["type": "integer", "minimum": 0, "maximum": 2000, "default": 500]
                 ],
                 "required": ["app"],
                 "oneOf": [
-                    ["required": ["element_index"], "not": ["anyOf": [["required": ["x"]], ["required": ["y"]]]]],
-                    ["required": ["x", "y"], "not": ["required": ["element_index"]]],
-                ],
+                    [
+                        "required": ["element_index"],
+                        "not": ["anyOf": [["required": ["x"]], ["required": ["y"]], ["required": ["observe_only"]]]]
+                    ],
+                    [
+                        "required": ["x", "y"],
+                        "not": ["anyOf": [["required": ["element_index"]], ["required": ["observe_only"]]]]
+                    ],
+                    ["required": ["observe_only"], "not": ["anyOf": [
+                        ["required": ["x"]], ["required": ["y"]], ["required": ["element_index"]],
+                        ["required": ["duration_ms"]]
+                    ]]]
+                ]
             ]
         )
     }

@@ -44,7 +44,10 @@ public final class ComputerUseToolDispatcher {
         self.service = service
     }
 
+    func discardHoverPopups() { service.discardHoverPopups() }
+
     public func callTool(name: String, arguments: [String: Any]) throws -> ToolCallResult {
+        if name != "click" || arguments["popup_token"] == nil { service.discardHoverPopups() }
         let input = !["list_apps", "get_app_state"].contains(name)
         if input { LiveWindowPreview.setInputActive(true) }
         defer { if input { LiveWindowPreview.setInputActive(false) } }
@@ -64,6 +67,9 @@ public final class ComputerUseToolDispatcher {
         case "hover":
             return try service.hover(app: requireString("app", in: arguments), arguments: arguments)
         case "click":
+            if arguments["popup_token"] != nil {
+                return try service.clickPopup(app: requireString("app", in: arguments), arguments: arguments)
+            }
             return try service.click(
                 app: requireString("app", in: arguments),
                 elementIndex: optionalElementIndex(in: arguments),
