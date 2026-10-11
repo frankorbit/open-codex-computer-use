@@ -1051,8 +1051,16 @@ public final class ComputerUseService {
             return try actionResult(for: query)
         }
 
-        let receiver = try keyboardInputBackend.readReceiver(snapshot, true)
         let target = try skyKeyTarget(for: snapshot)
+        // 显式 sky_key 与上游一致：视觉确认的输入目标不必暴露 AX 文本焦点。
+        if keyMethod == .skyKey {
+            try keyboardInputBackend.validateWindow(snapshot)
+            try keyboardInputBackend.typeText(target, text, {
+                try keyboardInputBackend.validateWindow(snapshot)
+            })
+            return try actionResult(for: query)
+        }
+        let receiver = try keyboardInputBackend.readReceiver(snapshot, true)
         // 点击可在不刷新快照的情况下改变焦点；输入前与合成 key 状态建立后均实时校验。
         try keyboardInputBackend.typeText(target, text, {
             try requireSameKeyboardReceiver(receiver, current: keyboardInputBackend.readReceiver(snapshot, true))
@@ -1071,7 +1079,24 @@ public final class ComputerUseService {
 
         let target = try skyKeyTarget(for: snapshot)
         try keyboardInputBackend.pressKey(target, key, {
-            _ = try keyboardInputBackend.readReceiver(snapshot, false)
+            if keyMethod == .skyKey {
+                try keyboardInputBackend.validateWindow(snapshot)
+            } else {
+                _ = try keyboardInputBackend.readReceiver(snapshot, false)
+            }
+        })
+        return try actionResult(for: query)
+    }
+
+    public func pasteText(app query: String, text: String) throws -> ToolCallResult {
+        let snapshot = try currentSnapshot(for: query)
+        guard snapshot.mode != .fixture else {
+            throw ComputerUseError.message("paste_text is unavailable for fixture apps")
+        }
+        let target = try skyKeyTarget(for: snapshot)
+        try keyboardInputBackend.validateWindow(snapshot)
+        try keyboardInputBackend.pasteText(target, text, {
+            try keyboardInputBackend.validateWindow(snapshot)
         })
         return try actionResult(for: query)
     }
@@ -2077,7 +2102,7 @@ public final class ComputerUseService {
             return
         }
 
-        try performAppPostInput(snapshot: snapshot, points: [point], requiresForeground: false) {
+        try performAppPostInput(snapshot: snapshot, points: [point]) {
             try InputSimulation.scrollTargeted(at: eventPoint, direction: direction, pages: pages, pid: snapshot.app.pid)
         }
     }
@@ -2111,30 +2136,18 @@ public final class ComputerUseService {
     }
 
     private func performAppPostInput(
-        snapshot: AppSnapshot, points: [CGPoint], requiresForeground: Bool = true, submit: () throws -> Void
+        snapshot: AppSnapshot, points: [CGPoint], submit: () throws -> Void
     ) throws {
         try dispatchAppPostInput(
             policy: ExecutionPolicy.current(),
             validateReceiver: {
-                for point in points {
-                    try self.validateCoordinateSnapshot(at: point, snapshot: snapshot, requireUnoccludedPoint: requiresForeground)
-                }
-                guard let window = snapshot.windowElement else {
-                    throw ComputerUseError.stateUnavailable("Missing app_post receiver window; observe again")
-                }
-                // 滚轮没有 mouse-down；后台可用目标 App 的实时 focused window 作为接收者证据。
-                let focusedMatches: Bool
-                if requiresForeground {
-                    focusedMatches = InputSimulation.isForegroundWindow(snapshot.app, window: window)
-                } else {
-                    focusedMatches = CFEqual(window, try KeyboardReceiver.read(in: snapshot, requireEditable: false))
-                }
-                try validateCoordinateAppPostReceiver(
-                    frontmostPID: NSWorkspace.shared.frontmostApplication?.processIdentifier,
-                    expectedPID: snapshot.app.pid,
-                    focusedWindowMatches: focusedMatches,
-                    requiresForeground: requiresForeground
-                )
+                try validateCoordinateAppPostTarget(validateWindow: {
+                    for point in points {
+                        try self.validateCoordinateSnapshot(at: point, snapshot: snapshot)
+                    }
+                }, readFocusedWindowMatch: {
+                    try KeyboardReceiver.optionalFocusedWindowMatches(in: snapshot)
+                })
             },
             submit: submit
         )
@@ -2153,17 +2166,6 @@ public final class ComputerUseService {
         )
         InputDiagnostics.event("mouse_route_selected", ["route": method.rawValue])
         try validateCoordinateSnapshot(at: point, snapshot: snapshot, identityOnly: method == .global)
-        if method == .appPost {
-            try validateCoordinateSnapshot(at: point, snapshot: snapshot, requireUnoccludedPoint: true)
-            guard let window = snapshot.windowElement else {
-                throw ComputerUseError.stateUnavailable("Snapshot window is unavailable; observe again")
-            }
-            try validateCoordinateAppPostReceiver(
-                frontmostPID: NSWorkspace.shared.frontmostApplication?.processIdentifier,
-                expectedPID: snapshot.app.pid,
-                focusedWindowMatches: InputSimulation.isForegroundWindow(snapshot.app, window: window)
-            )
-        }
         guard let bounds = snapshot.windowBounds else {
             throw ComputerUseError.stateUnavailable("Coordinate window bounds are unavailable")
         }

@@ -89,7 +89,7 @@
   - `perform_secondary_action` 只执行目标元素已经暴露出来的 AX action；Safari 这类 AppKit custom action descriptor（例如 `Name:close tab ...`）会显示为短名称并准确映射回过滤后的原始 AX action，避免 raw/rendered action 错配；短名称与其他显示名称或任一其他原始 AX action（包括被过滤的动作，忽略大小写）冲突时保留完整 descriptor，保证输出 selector 不被原始动作精确匹配抢占；无效或歧义 action 返回官方风格的 `... is not a valid secondary action for ...`，fixture 的 `Raise` 路径也不再为了测试去准备全局物理指针输入
   - `set_value` 会先用 `AXUIElementIsAttributeSettable(kAXValueAttribute)` 判断目标是否真的是可设置值元素，只有 settable 时才调用 `AXUIElementSetAttributeValue`；不可设置时返回官方风格的 non-settable 错误，不退到键盘输入、剪贴板或未公开的文本替换接口
   - `click.click_method` 是开源版的可选扩展，支持 `auto`（默认）、`accessibility`、`app_post`、`sky_click` 和 `global`。坐标 auto 的 fork 路由见下文；元素索引的 AX 选择不变，鼠标兜底与坐标共用自动路由；显式模式不会静默 fallback 到其他实现。`accessibility` 只接受 `element_index`；其余 mouse 路径可以使用 `element_index` 的计算落点或原始 `x/y` 坐标。
-  - element-targeted `click` 的 `auto` 左键路径会先试原生列表的 `AXSelectedChildren` 选择，再试 `AXPress` / `AXConfirm` / `AXOpen` 这类真正语义化的激活动作；如果目标本身不可点，还会继续尝试其子孙 AX 元素（例如 Finder sidebar row 下面暴露 `AXOpen` 的 cell）和命中点附近的 AX hit-test 结果，最后进入现有 non-AX 分支：默认左键单击/双击使用 `sky_click`，其他按键使用受前台窗口校验的 `app_post`；只有明确的自动前台策略才使用全局 HID 事件。`AXRaise` / `kAXMainAttribute` / `kAXFocusedAttribute` 这类 activation-only fallback 只在显式 accessibility 模式允许窗口级元素使用，auto 不走此分支，避免普通静态文本或容器把“获得焦点”误报成“点击已处理”；`click_count > 1` 也会优先重复可用的 AX action。
+  - element-targeted `click` 的 `auto` 左键路径会先试原生列表的 `AXSelectedChildren` 选择，再试 `AXPress` / `AXConfirm` / `AXOpen` 这类真正语义化的激活动作；如果目标本身不可点，还会继续尝试其子孙 AX 元素（例如 Finder sidebar row 下面暴露 `AXOpen` 的 cell）和命中点附近的 AX hit-test 结果，最后进入现有 non-AX 分支：默认左键单击/双击使用 `sky_click`，其他按键使用经独立窗口校验的 `app_post`；只有明确的自动前台策略才使用全局 HID 事件。`AXRaise` / `kAXMainAttribute` / `kAXFocusedAttribute` 这类 activation-only fallback 只在显式 accessibility 模式允许窗口级元素使用，auto 不走此分支，避免普通静态文本或容器把“获得焦点”误报成“点击已处理”；`click_count > 1` 也会优先重复可用的 AX action。
   - 显式 `click_method=accessibility` 只执行上述 AX 语义动作；显式 `click_method=app_post` 绕过 AX 候选和后代扫描，直接通过 `CGEvent.postToPid` 向目标进程发送 `mouseMoved` / down / up；显式 `click_method=sky_click` 只在 macOS 接受左键单击/双击，它验证当前 snapshot 的 `CGWindowID` 仍为同一 PID 所有，仅通过 `SLPSPostEventRecordTo` 让目标应用短暂进入 synthetic-active 状态，绝不向真实前台应用发送 defocus record，再按 Chromium-compatible recipe 发送 target move、`(-1,-1)` primer 和真实 down/up。每个鼠标事件同时经动态解析的 `SLEventPostToPid` 与公开 `postToPid` 投递，并带 window-local location、PID/window 和 click-group 字段；renderer settle 后只撤销目标的 synthetic-active 状态。`sky_click` 的 action-result snapshot 刷新也禁止 activate / `AXRaise` 恢复，目标状态瞬时不可读时直接失败。fork 的坐标 auto 左键单击/双击也使用此路径；任一步失败不 fallback。显式 `click_method=global` 同样绕过 AX，但通过 `.cghidEventTap` 发送系统级指针事件。`global` 还必须设置 `OPEN_COMPUTER_USE_ALLOW_FOREGROUND_CLICKS=1`、点击前台策略或全局指针授权，否则在移动 visual cursor 或发送输入前拒绝请求。
   - `get_app_state` 解析目标窗口时先看 on-screen 窗口，再退到所有窗口，所以位于其他 Space 的窗口不会触发 activate / raise 恢复；拍到未被遮挡的窗口后会关闭它的 WindowServer occlusion 通知（`WindowOcclusionKeepAlive`），之后被遮挡或切换 Space 时 Chromium / Electron / WebKit 仍保留页面与 `AXWebArea`。keep-alive 保存 SPI 返回的原始开关状态，并在 turn-ended、MCP/app-agent connection 关闭、server 正常关闭或进程退出时恢复；恢复失败的记录保留到后续重试。因为 snapshot 会维护该状态，macOS `get_app_state` 不声明 `readOnlyHint`。Chromium 系 app 的 web AX tree 是懒加载的，窗口可见时最多重走 3 秒，被遮挡时在 tree 末尾追加说明。`sky_click` 不再要求窗口 on-screen。详见 `docs/references/macos-window-visibility-and-spaces.md`。
   - 窗口截图主路径是 WindowServer 的 `SLSHWCaptureWindowList`（任何 Space、被遮挡均可，15–45 ms），ScreenCaptureKit 为 fallback；AX root window 通过 `_AXUIElementGetWindow` 直接绑定 `CGWindowID`。输入 recipe 的固定间隔都是环境变量可调的校准旋钮，默认值来自基准测试（见 `docs/references/macos-window-visibility-and-spaces.md`）。
@@ -97,7 +97,7 @@
   - `type_text.key_method` / `press_key.key_method` 是开源版的可选扩展，支持 `auto`（默认）和 macOS-only 的 `sky_key`。本 fork 的两者在 macOS 共用后台键盘链路，已在前台时直接定向投递并验证接收窗口；后台时复用 `sky_click` 的 target-only synthetic-active record，再投递 yabai 的 make-key-window record 让目标 app 在进程内把当前 snapshot 窗口设为 key window，之后走现有 `CGEvent.postToPid` 键盘路径；带 `cmd` 的单字符组合键改为在目标 AX 菜单栏找到对应菜单项并 `AXPress`。它不要求窗口 on-screen（可用于其他 Space），但对隐藏 app fail closed；action-result snapshot 与 `sky_click` 一样使用 read-only recovery policy。
   - 对 renderer 合成的 summary `text` 行，`click` 不再默认点击父容器中心；这类元素使用左侧安全锚点。对普通 row/container/text 的后代候选，也会过滤右侧紧凑 hover action（例如 Lark / Electron 会话列表里的“完成”勾），避免把主行点击误操作成 side action；Electron/Lark 这类 app 的 WebArea 合成文本会优先寻找紧邻的行级 `AXPress` 祖先并静默执行，避免用物理鼠标点行。浏览器 WebArea（例如 Chrome/GitHub）不走这条 Electron-scoped 行级祖先点击优化，仍保留通用 link/container 点击路径。命中点如果只反查到覆盖整页的 Electron/WebArea 级 AX 元素，不再继续扫描整个大容器的子孙候选，避免一次行点击被远处的可点击元素截走。
   - `AXUIElementCopyElementAtPosition` 做坐标命中，尽量把 coordinate click 反解成可操作 AX 元素
-  - `CGEvent.postToPid` 定向发送键盘事件，避免为了 `type_text` / `press_key` 抢前台；`type_text` 会把文本按 Unicode extended grapheme cluster 聚合成小批量 `keyboardSetUnicodeString` 事件，避免中文标点、emoji / 代理对和组合字符被逐个 UTF-16 code unit 拆开后在 Electron 富文本输入框里乱序或变形。输入前实时读取目标 App 的焦点并校验 PID、绑定窗口、可编辑角色和禁用状态；合成 key-window 状态建立后再次确认仍是同一输入框，不要求目标为系统前台。`type_text` 不再拼接旧 AXValue，保留插入点和选区的键盘语义；显式 `set_value` 保持不变。接收者不明时拒绝，投递后的错误不换路重放；焦点摘要在树裁剪时仍显示角色并明确无索引；`press_key` 的 xdotool parser 覆盖官方 binary key table 里常见的 `BackSpace`、`Page_Up`、`Prior` / `Next`、`F1...F12` 和 `KP_*` alias
+  - `CGEvent.postToPid` 定向发送键盘事件，避免为了 `type_text` / `press_key` 抢前台；`type_text` 会把文本按 Unicode extended grapheme cluster 聚合成小批量 `keyboardSetUnicodeString` 事件，避免中文标点、emoji / 代理对和组合字符被逐个 UTF-16 code unit 拆开后在 Electron 富文本输入框里乱序或变形。默认 auto 输入前实时读取目标 App 的焦点并校验 PID、绑定窗口、可编辑角色和禁用状态；合成 key-window 状态建立后再次确认仍是同一输入框，不要求目标为系统前台。`type_text` 不再拼接旧 AXValue，保留插入点和选区的键盘语义；显式 `set_value` 保持不变。接收者不明时拒绝，投递后的错误不换路重放；焦点摘要在树裁剪时仍显示角色并明确无索引；`press_key` 的 xdotool parser 覆盖官方 binary key table 里常见的 `BackSpace`、`Page_Up`、`Prior` / `Next`、`F1...F12` 和 `KP_*` alias
   - `scroll.pages` 对齐官方 `1.0.755` 的 `number` schema，支持小数页数；整数页且目标暴露 `AXScroll*ByPage` 时优先走 AX action，否则用 `CGEvent.postToPid` 向目标进程定向发送 scroll event
   - `drag` 仍是 coordinate-only API，但默认不再使用全局 `.cghidEventTap` mouse event；默认改为 `CGEvent.postToPid` 定向发送 mouse move / down / dragged / up 事件，避免移动用户真实硬件光标；这些 coordinate tool 的 `x/y` 先按 screenshot pixel 坐标解释，再依据截图像素尺寸与目标 window bounds 的比例映射回 window point / Quartz global 坐标，避免 Retina 窗口上把 2x 像素误当成 1x point 导致点击落到错误位置
   - `click` / `scroll` / `drag` 在环境变量未开启的默认配置下不会走全局 `.cghidEventTap`，因此不会移动或抢占用户真实鼠标；`OPEN_COMPUTER_USE_ALLOW_GLOBAL_POINTER_FALLBACKS=1` 是全局指针能力的进程级安全门，显式 `click_method=global` 仍必须通过这层授权。默认路径不再为了 fallback 调用 `NSRunningApplication.activate`。`drag` 的结果会在 snapshot 文本之后、截图之前附带一条 `Drag delivered via ...` 文本项，说明本次走的是 `app_post` 定向投递还是全局指针路径；默认路径下同时说明 `postToPid` 事件不经过 window server，因此无法驱动窗口移动、文本拖选、Finder 拖放这类 window server 拖拽会话。`drag` 的 tool description 也同步说明了这一限制和对应环境变量。显式开启全局路径后，拖拽使用默认 event source 向 HID tap 投递，按距离插值并为每步写入位移 delta；macOS 26+ 的 down / dragged / up 还会共享一个手势事件编号，使 window server 能识别窗口移动、文本拖选和 Finder 拖放所需的真实拖拽会话
@@ -182,11 +182,11 @@ macOS screenshot 在每轮捕获读取用户 JSON 配置，优先级为 ENV > �
 
 ## Fork 的坐标点击修正
 
-macOS 坐标 `auto` 点击只对实时命中、属于当前窗口且包含点击点的直接控件执行 AXPress（右键为 AXShowMenu）。不会搜索根窗口的可点击后代，也不会选择祖先列表项。窗口有效性独立通过 WindowServer 校验：ID、PID 和几何保持一致，进程未隐藏；同 App、同 Space 的上层窗口不能遮挡点击点。定向输入允许其他 App 覆盖与其他 Space，只有 global 额外要求 on-screen。AX 没有元素或未实现命中查询时仍可走鼠标；通信错误拒绝输入。AX 窗口归属未知只走鼠标，明确不匹配则拒绝。鼠标左键单击/双击使用 sky_click，其余沿 app_post；显式开启全局指针时走 global，并要求点击点不被其他 App 遮挡。窗口在查询前和发送输入前各验证一次。AX 或鼠标发出后失败不换路重放，坐标 auto 回读只读，不激活/重开窗口。元素索引有效 AX 点击和显式定向点击保留；前台鼠标点击按下文专用策略执行。hit test 使用窗口局部坐标加窗口原点，截图缩放仅发生一次。
+macOS 坐标 `auto` 点击只对实时命中、属于当前窗口且包含点击点的直接控件执行 AXPress（右键为 AXShowMenu）。不会搜索根窗口的可点击后代，也不会选择祖先列表项。窗口有效性独立通过 WindowServer 校验：ID、PID 和几何保持一致，进程未隐藏；同 App、同 Space 的上层窗口不能遮挡点击点。定向输入允许其他 App 覆盖与其他 Space，只有 global 额外要求 on-screen。AX 可选命中查询无值、不支持、未实现、通信失败或元素失效时，可在独立窗口复验后走鼠标；权限关闭、非法参数与未知错误拒绝输入。AX 窗口归属未知只走鼠标，明确不匹配则拒绝。鼠标左键单击/双击使用 sky_click，其余沿 app_post；显式开启全局指针时走 global，并要求点击点不被其他 App 遮挡。窗口在查询前和发送输入前各验证一次。AX 或鼠标发出后失败不换路重放，坐标 auto 回读只读，不激活/重开窗口。元素索引有效 AX 点击和显式定向点击保留；前台鼠标点击按下文专用策略执行。hit test 使用窗口局部坐标加窗口原点，截图缩放仅发生一次。
 
 相关回归位于 `CoordinateClickTests.swift`；真实第三方 App 的命中结果和鼠标投递效果仍需 GUI 验收。
 
-仅 sky_click 允许后台或跨 Space 的鼠标输入。auto 的 app_post 路径还要求目标是前台 App 的聚焦窗口且点击点无遮挡，否则输入前拒绝，避免 PID-only 事件误投同进程其他窗口。显式 app_post API 不变。
+sky_click 和 app_post 均允许后台定向输入。后台模式的 app_post 在可选 AX focused-window 查询前后验证 PID、窗口 ID、几何与同 App 遮挡；已知 focused window 不匹配则拒绝，AX 信息不可用不单独阻断。它不要求目标占据系统前台，也不主动激活；PID-only 事件仍无法保证应用实际接收，必须观察效果。
 
 ### 输入诊断
 
@@ -218,7 +218,7 @@ click MCP 回执中的 `_meta.ocuDiagnostic` 关联 `ai.today.ocu / input` 的 O
 
 ### 后台输入默认与显式兼容路径
 
-`OPEN_COMPUTER_USE_COORDINATE_CLICK_MODE=background` 让 auto 的鼠标分支保持后台优先，即使显式前台点击已获授权也不改变默认路由。`OPEN_COMPUTER_USE_ALLOW_FOREGROUND_CLICKS=1` 只允许调用者显式使用 global 点击，不扩大滚动或拖拽权限。元素和坐标的鼠标分支共用窗口校验与选路；SkyLight 不支持的右键、中键或多击不会未经验证投到后台进程。
+`OPEN_COMPUTER_USE_COORDINATE_CLICK_MODE=background` 让 auto 的鼠标分支保持后台优先，即使显式前台点击已获授权也不改变默认路由。`OPEN_COMPUTER_USE_ALLOW_FOREGROUND_CLICKS=1` 只允许调用者显式使用 global 点击，不扩大滚动或拖拽权限。元素和坐标的鼠标分支共用窗口校验与选路；SkyLight 不支持的右键、中键或多击使用窗口验证后的 app_post；不保证所有应用响应此路径。
 
 自动动作回读关闭时，键盘仍实时检查接收者，不能使用点击前缓存的焦点。动作返回不证明输入已被应用消费；模型应在一轮 JS 的末尾显式观察并核对结果。后台键盘与真实鼠标是否不干扰用户，仍须对目标 App 做验收。这里复用上游 SkyLight 实现，不宣称复制闭源 Codex 的内部调用栈。
 
@@ -230,6 +230,14 @@ click MCP 回执中的 `_meta.ocuDiagnostic` 关联 `ai.today.ocu / input` 的 O
 
 严格模式禁止 global 点击、移动真实鼠标的 hover、popup global 点击、显式 AXRaise、accessibility 的 activation-only fallback、快照 activate/unhide/raise/open 恢复，以及 global 滚动拖拽。显式 accessibility 的普通 AX 语义动作仍可执行；auto 坐标的 AX/SkyLight 路径和后台焦点恢复保留。初始化仍可使用既有 activates=false 的单次后台启动契约。
 
-`postToPid` 本身不等于抢前台。严格模式下滚轮保留后台投递，新增实时 focused-window、PID、几何及同 App 遮挡验证；不要求系统前台。现有 PID 鼠标点击和拖拽未编码目标窗口 ID，严格模式只允许已在前台、焦点窗口与绑定快照一致且点位实际接收者一致的情形，不主动激活窗口。因而后台 app_post 点击和后台 PID 拖拽会被拒绝，这是明确的兼容损失；未设置执行模式时保留旧行为。失败不切换 global、不重放。该策略限制 fork 主动发出的前台操作，不保证第三方 App 自身不会因 AX 动作或输入改变焦点。
+`postToPid` 本身不等于抢前台。后台模式下点击、滚轮和拖拽统一保留进程/窗口身份、几何和同 App 遮挡验证；focused-window 是可选证据，只拒绝已知冲突。目标自然进入前台不再中断后续已验证输入，也不强制切回。后台策略禁止 fork 主动 Raise/global/真实 hover，不承诺第三方 App 不改变前台。输入失败不切换 global、不重放。PID 定向投递不保证窗口服务器拖拽等交互成功。
 
 `hover(observe_only=true)` 是 native 只读弹层观察入口，不受严格后台或旧 hover 输入开关限制；必须已有有效绑定快照，回读仍为 readOnly，不启动应用。未知执行模式照常拒绝。输入 hover 在严格后台拒绝且不出现在工具列表中；显式 native 调用只读分支不依赖该列表。dispatcher 不为只读请求切换 input-active 状态。
+
+### 2026-10-11 可选 AX 查询与显式输入
+
+显式 `sky_key` / `paste_text` 以当前进程和 WindowServer 窗口身份为输入前置条件，AX 文本焦点缺失不构成否决。`auto` 仍要求实时可编辑接收者；保留插入点/选区语义，不恢复上游旧的 `AXValue(base+text)` 拼接。菜单查询仅为可选优化：查询不可用时重新验证目标再发送 PID key；AXPress 一旦尝试，错误不允许 key fallback。自然前台变化不会中断输入；窗口改变、权限错误和未知提交结果仍停止。详见 [输入策略对齐计划](exec-plans/completed/20261011-input-policy-parity.md)。
+
+### 粘贴结算与生产分派回归
+
+paste_text 提交后保留新剪贴板内容，不用任意读取者回执触发恢复，也不定时恢复旧数据。仅菜单/键盘动作尝试之前失败才在仍持有所有权时恢复原格式；提交后错误标记未知结果，不重放。此副作用在工具 schema 和 JS 文档明确说明。SkyKeyboardDeliveryBackend 只注入系统查询/SPI 边界，测试直接执行 SkyKeyboardDispatcher.deliver 的真实前后台分支，覆盖自然前台变化、窗口失效与清理。

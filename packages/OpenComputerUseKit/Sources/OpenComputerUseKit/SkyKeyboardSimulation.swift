@@ -72,21 +72,12 @@ func dispatchSkyMenuKey<Item>(
     }
 }
 
-/// 属性未提供与 AX 查询失败必须区分，后者不能伪装成无菜单并继续投递。
+/// 菜单仅是可选投递路径；独立窗口校验在查找后、输入前执行。
 func readSkyMenuAttribute(
     _ attribute: String,
     read: () -> (AXError, CFTypeRef?),
 ) throws -> CFTypeRef? {
-    let (result, value) = read()
-    switch result {
-    case .success: return value
-    case .noValue, .attributeUnsupported: return nil
-    default:
-        throw ComputerUseError.stateUnavailable(
-            "Menu query for \(attribute) failed (AXError \(result.rawValue)); "
-                + "no key or menu action was sent. Observe before further input.",
-        )
-    }
+    try readOptionalInputAXAttribute(attribute, read: read)
 }
 
 /// 合成焦点的清理只执行一次；即使投递抛错，也不能吞掉清理失败或重放输入。
@@ -113,22 +104,7 @@ func withSkyKeyboardFocus<Context>(
     try operation.get()
 }
 
-/// 不把前台强制切回：那会覆盖用户自己的切换。只阻止后台目标抢到前台后继续投递。
-func validateSkyKeyboardBackground(
-    required: Bool, initialPID: pid_t?, currentPID: pid_t?, targetPID: pid_t,
-    inputMayHaveOccurred: Bool,
-) throws {
-    guard required, initialPID != targetPID, currentPID == targetPID else { return }
-    let effect = inputMayHaveOccurred
-        ? "Input effect is unknown; observe before further input and do not replay."
-        : "No keyboard input was sent; observe before further input."
-    throw ComputerUseError.message("Background target became the foreground app. " + effect)
-}
-
-/// Owner check for keyboard targets. Unlike `sky_click`, the window does not
-/// need to be on-screen: keyboard delivery is process-addressed, so a window on
-/// another Space or hidden app is a valid target as long as it still exists
-/// and belongs to the snapshot's process.
+/// 仅验证 WindowServer 所有权，允许其他 Space；隐藏状态由输入入口独立拒绝。
 func skyKeyWindowMatchesTarget(
     windowInfo: [[String: Any]],
     windowID: CGWindowID,
@@ -147,19 +123,9 @@ func skyKeyWindowMatchesTarget(
     }
 }
 
-/// `sky_key`: deliver keyboard input to a background window without changing
-/// the real foreground app.
-///
-/// Keyboard events posted to a pid reach any AppKit window, but Chromium and
-/// Electron only insert text while their NSWindow is key (page focus is driven
-/// by `OnWindowIsKeyChanged`). The recipe therefore reuses the `sky_click`
-/// target-only synthetic-active state, then posts yabai's key-window record
-/// pair so the target app makes the window key internally, waits for it to
-/// take effect, delivers the ordinary `CGEvent.postToPid` keyboard events (or
-/// presses the matching menu item for command chords), and releases the
-/// synthetic state again. The real frontmost app keeps its active, key and
-/// first-responder state throughout; the target is never raised and the
-/// pointer never moves.
+/// 定向键盘输入不主动 Raise 或移动真实指针。
+/// 后台通过 synthetic-active 与 key-window record 准备目标，再发送 PID key 或 AX 菜单动作。
+/// 第三方应用仍可能自行切换前台；只要目标身份有效，该变化不导致中止或重放。
 enum SkyKeyboardDispatcher {
     private static let dispatchLock = NSLock()
     static let keyWindowFallbackSettleDefaultMilliseconds = 10.0
@@ -182,16 +148,16 @@ enum SkyKeyboardDispatcher {
         spi: SkyLightSPI = .shared,
         validateReceiver: () throws -> Void = {},
     ) throws {
-        try deliver(to: target, spi: spi) { validateBackground in
+        try deliver(to: target, spi: spi) { validateTarget in
             try validateReceiver()
-            try validateBackground()
+            try validateTarget()
             InputDiagnostics.event(
                 "keyboard_receiver_validated",
                 ["target_pid": String(target.pid), "window_id": String(target.windowID)],
             )
             try InputSimulation.typeText(text, pid: target.pid) {
                 try validateReceiver()
-                try validateBackground()
+                try validateTarget()
             }
         }
     }
@@ -202,40 +168,74 @@ enum SkyKeyboardDispatcher {
         spi: SkyLightSPI = .shared,
         validateReceiver: () throws -> Void = {},
     ) throws {
-        // Reject bad key specs before touching the target's focus state.
         let parsed = try KeyPressParser.parse(key)
-        try deliver(to: target, spi: spi) { validateBackground in
-            try dispatchSkyMenuKey(
-                findMenuItem: {
-                    guard let equivalent = skyMenuKeyEquivalent(for: parsed) else { return nil as AXUIElement? }
-                    return try menuItem(matching: equivalent, pid: target.pid)
-                },
-                validateReceiver: {
-                    try validateReceiver()
-                    try validateBackground()
-                    InputDiagnostics.event(
-                        "keyboard_receiver_validated",
-                        ["target_pid": String(target.pid), "window_id": String(target.windowID)],
-                    )
-                },
-                pressMenuItem: { item in
-                    let result = AXUIElementPerformAction(item, kAXPressAction as CFString)
-                    guard result == .success else {
-                        throw ComputerUseError.message(
-                            "sky_key menu action for '\(key)' returned AXError \(result.rawValue); effect is unknown. "
-                                + "Observe before further input; no key fallback was sent.",
-                        )
-                    }
-                    Thread.sleep(forTimeInterval: 0.1)
-                },
-                postKey: { try InputSimulation.pressKey(key, pid: target.pid) },
-            )
+        try deliver(to: target, spi: spi) { validateTarget in
+            try dispatchKey(target: target, key: key, parsed: parsed) {
+                try validateReceiver()
+                try validateTarget()
+            }
         }
     }
 
-    private static func deliver(
+    static func pasteText(
+        target: SkyKeyboardTarget, text: String,
+        spi: SkyLightSPI = .shared, validateReceiver: () throws -> Void,
+    ) throws {
+        let parsed = try KeyPressParser.parse("super+v")
+        // 先建立目标内部 key 状态，直到粘贴提交或失败收尾后才释放。
+        try withoutActuallyEscaping(validateReceiver) { validate in
+            try deliver(to: target, spi: spi) { validateTarget in
+                try withoutActuallyEscaping(validateTarget) { ensureTarget in
+                    try ClipboardInput.paste(text, validateReceiver: {
+                        try validate()
+                        try ensureTarget()
+                    }) { check, willSubmit in
+                        try dispatchKey(
+                            target: target, key: "super+v", parsed: parsed,
+                            validateReceiver: check, willSubmit: willSubmit
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    private static func dispatchKey(
+        target: SkyKeyboardTarget, key: String, parsed: ParsedKeyPress,
+        validateReceiver: () throws -> Void,
+        willSubmit: () -> Void = {},
+    ) throws {
+        try dispatchSkyMenuKey(
+            findMenuItem: {
+                guard let equivalent = skyMenuKeyEquivalent(for: parsed) else { return nil as AXUIElement? }
+                return try menuItem(matching: equivalent, pid: target.pid)
+            },
+            validateReceiver: {
+                try validateReceiver()
+                InputDiagnostics.event(
+                    "keyboard_receiver_validated",
+                    ["target_pid": String(target.pid), "window_id": String(target.windowID)],
+                )
+            },
+            pressMenuItem: { item in
+                willSubmit()
+                let result = AXUIElementPerformAction(item, kAXPressAction as CFString)
+                guard result == .success else {
+                    throw ComputerUseError.message(
+                        "sky_key menu action for '\(key)' returned AXError \(result.rawValue); effect is unknown. "
+                            + "Observe before further input; no key fallback was sent.",
+                    )
+                }
+                Thread.sleep(forTimeInterval: 0.1)
+            },
+            postKey: { willSubmit(); try InputSimulation.pressKey(key, pid: target.pid) },
+        )
+    }
+
+    static func deliver(
         to target: SkyKeyboardTarget,
-        spi: SkyLightSPI,
+        spi: SkyLightSPI = .shared,
+        backend override: SkyKeyboardDeliveryBackend? = nil,
         _ body: (() throws -> Void) throws -> Void,
     ) throws {
         _ = try ExecutionPolicy.current()
@@ -244,69 +244,71 @@ enum SkyKeyboardDispatcher {
             dispatchLock.unlock()
         }
 
-        try validate(target: target)
+        let backend = override ?? liveDeliveryBackend(spi: spi)
+        try backend.validateTarget(target)
 
-        if NSWorkspace.shared.frontmostApplication?.processIdentifier == target.pid {
+        if backend.frontmostPID() == target.pid {
             InputDiagnostics.event("keyboard_route_selected", ["route": "foreground_pid"])
-            try body {}
+            try body { try backend.validateTarget(target) }
             return
         }
 
-        guard spi.capability.isAvailable else {
-            throw ComputerUseError.message(
-                "key_method 'sky_key' is unavailable: \(spi.capability.unavailableReason)",
-            )
-        }
+        try backend.requireCapability()
+        try deliverInBackground(to: target, backend: backend, body)
+    }
 
-        try deliverInBackground(to: target, spi: spi, body)
+    private static func liveDeliveryBackend(spi: SkyLightSPI) -> SkyKeyboardDeliveryBackend {
+        SkyKeyboardDeliveryBackend(
+            frontmostPID: { NSWorkspace.shared.frontmostApplication?.processIdentifier },
+            validateTarget: { try validate(target: $0) },
+            requireCapability: {
+                guard spi.capability.isAvailable else {
+                    throw ComputerUseError.message(
+                        "key_method 'sky_key' is unavailable: \(spi.capability.unavailableReason)"
+                    )
+                }
+            },
+            begin: { try spi.beginSyntheticTargetFocus(targetPID: $0.pid, targetWindowID: $0.windowID) },
+            makeKey: { try spi.makeSyntheticTargetWindowKey($0) },
+            waitForKey: { waitForKeyWindow($0, spi: spi) },
+            releaseWait: { if releaseSettle > 0 { Thread.sleep(forTimeInterval: releaseSettle) } },
+            end: { try spi.endSyntheticTargetFocus($0) }
+        )
     }
 
     private static func deliverInBackground(
-        to target: SkyKeyboardTarget, spi: SkyLightSPI, _ body: (() throws -> Void) throws -> Void,
+        to target: SkyKeyboardTarget, backend: SkyKeyboardDeliveryBackend, _ body: (() throws -> Void) throws -> Void,
     ) throws {
         InputDiagnostics.event("keyboard_route_selected", ["route": "sky_key"])
         let start = TimingLog.now()
-        let initialPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
-        let backgroundRequired = try ExecutionPolicy.current().isBackground
-        func validateBackground(inputMayHaveOccurred: Bool) throws {
-            try validateSkyKeyboardBackground(
-                required: backgroundRequired, initialPID: initialPID,
-                currentPID: NSWorkspace.shared.frontmostApplication?.processIdentifier,
-                targetPID: target.pid, inputMayHaveOccurred: inputMayHaveOccurred,
-            )
-        }
         InputDiagnostics.desktopState("keyboard_before_synthetic_focus")
         try withSkyKeyboardFocus(
             begin: {
-                try spi.beginSyntheticTargetFocus(targetPID: target.pid, targetWindowID: target.windowID)
+                try backend.begin(target)
             },
             prepare: { focusContext in
                 InputDiagnostics.desktopState("keyboard_after_synthetic_focus")
-                try validateBackground(inputMayHaveOccurred: false)
-                try spi.makeSyntheticTargetWindowKey(focusContext)
+                try backend.validateTarget(target)
+                try backend.makeKey(focusContext)
                 TimingLog.log("sky_key.activate", since: start)
                 let keyStart = TimingLog.now()
-                waitForKeyWindow(target, spi: spi)
+                backend.waitForKey(target)
                 InputDiagnostics.desktopState("keyboard_after_key_window")
-                try validateBackground(inputMayHaveOccurred: false)
+                try backend.validateTarget(target)
                 TimingLog.log("sky_key.key_window", since: keyStart)
             },
             deliver: {
                 let deliverStart = TimingLog.now()
-                try body { try validateBackground(inputMayHaveOccurred: false) }
+                try body { try backend.validateTarget(target) }
                 InputDiagnostics.desktopState("keyboard_after_input")
                 TimingLog.log("sky_key.deliver", since: deliverStart)
-                if releaseSettle > 0 {
-                    Thread.sleep(forTimeInterval: releaseSettle)
-                }
-                try validateBackground(inputMayHaveOccurred: true)
+                backend.releaseWait()
             },
             end: { focusContext in
-                try spi.endSyntheticTargetFocus(focusContext)
+                try backend.end(focusContext)
                 InputDiagnostics.desktopState("keyboard_after_focus_release")
             },
         )
-        try validateBackground(inputMayHaveOccurred: true)
         TimingLog.log("sky_key.total", since: start)
     }
 

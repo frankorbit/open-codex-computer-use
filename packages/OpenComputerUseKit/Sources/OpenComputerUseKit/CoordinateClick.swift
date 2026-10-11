@@ -63,12 +63,9 @@ func dispatchCoordinateClick(
 }
 
 func coordinateHitTestHasElement(_ result: AXError) throws -> Bool {
-    switch result {
-    case .success: return true
-    case .noValue, .notImplemented: return false
-    default:
-        throw ComputerUseError.stateUnavailable("AX hit test failed (\(result.rawValue)); observe again before input")
-    }
+    if result == .success { return true }
+    if inputAXLookupIsUnavailable(result) { return false }
+    throw ComputerUseError.stateUnavailable("AX hit test failed (\(result.rawValue)); observe again before input")
 }
 
 func coordinateMouseMethod(button: MouseButtonKind, clickCount: Int, globalEnabled: Bool) -> ClickMethod {

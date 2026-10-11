@@ -1,18 +1,25 @@
 import ApplicationServices
-import XCTest
 @testable import OpenComputerUseKit
+import XCTest
 
 final class CoordinateWindowTests: XCTestCase {
     private let bounds = CGRect(x: -900, y: 120, width: 800, height: 600)
     private let point = CGPoint(x: -600, y: 400)
 
-    private func window(id: Int = 42, pid: Int = 1234, rect: CGRect? = nil, visible: Bool = true, alpha: Double = 1) -> [String: Any] {
+    private func window(id: Int = 42, pid: Int = 1234, rect: CGRect? = nil, visible: Bool = true,
+                        alpha: Double = 1) -> [String: Any] {
         [kCGWindowNumber as String: NSNumber(value: id), kCGWindowOwnerPID as String: NSNumber(value: pid),
          kCGWindowBounds as String: (rect ?? bounds).dictionaryRepresentation,
          kCGWindowIsOnscreen as String: NSNumber(value: visible), kCGWindowAlpha as String: NSNumber(value: alpha)]
     }
 
-    private func validate(_ windows: [[String: Any]], global: Bool = false, at location: CGPoint? = nil, receiver: CGWindowID? = 42, spaces: @escaping (CGWindowID) -> [UInt64]? = { _ in [1] }) throws {
+    private func validate(
+        _ windows: [[String: Any]],
+        global: Bool = false,
+        at location: CGPoint? = nil,
+        receiver: CGWindowID? = 42,
+        spaces: @escaping (CGWindowID) -> [UInt64]? = { _ in [1] }
+    ) throws {
         try validateCoordinateWindow(windowID: 42, pid: 1234, bounds: bounds, point: location ?? point,
                                      windows: windows, requireUnoccludedPoint: global, spacesForWindow: spaces,
                                      mouseReceiver: { _ in receiver })
@@ -49,7 +56,11 @@ final class CoordinateWindowTests: XCTestCase {
     }
 
     func testOutsideAndNonfinitePointsReject() {
-        for location in [CGPoint(x: -901, y: 400), CGPoint(x: CGFloat.nan, y: 400), CGPoint(x: -600, y: CGFloat.infinity)] {
+        for location in [
+            CGPoint(x: -901, y: 400),
+            CGPoint(x: CGFloat.nan, y: 400),
+            CGPoint(x: -600, y: CGFloat.infinity)
+        ] {
             XCTAssertThrowsError(try validate([window()], at: location))
         }
     }
@@ -104,7 +115,11 @@ final class CoordinateWindowTests: XCTestCase {
                     validateTarget: {}, prepare: {},
                     validateReceiver: {
                         checks += 1
-                        try self.validate([self.window(id: 56, pid: 800), self.window()], global: true, receiver: receiver)
+                        try self.validate(
+                            [self.window(id: 56, pid: 800), self.window()],
+                            global: true,
+                            receiver: receiver
+                        )
                     },
                     submit: { inputs += 1 }
                 )
@@ -130,18 +145,25 @@ final class CoordinateWindowTests: XCTestCase {
         XCTAssertThrowsError(try validate([window(visible: false)], global: true))
     }
 
-    func testPIDOnlyMouseRequiresActualForegroundReceiver() throws {
-        try validateCoordinateAppPostReceiver(frontmostPID: 1234, expectedPID: 1234, focusedWindowMatches: true)
-        XCTAssertThrowsError(try validateCoordinateAppPostReceiver(frontmostPID: nil, expectedPID: 1234, focusedWindowMatches: true))
-        XCTAssertThrowsError(try validateCoordinateAppPostReceiver(frontmostPID: 5678, expectedPID: 1234, focusedWindowMatches: true))
-        XCTAssertThrowsError(try validateCoordinateAppPostReceiver(frontmostPID: 1234, expectedPID: 1234, focusedWindowMatches: false))
+    func testPIDOnlyMouseAllowsUnavailableAXButRejectsKnownWrongWindow() throws {
+        try validateCoordinateAppPostReceiver(focusedWindowMatches: true)
+        try validateCoordinateAppPostReceiver(focusedWindowMatches: nil)
+        XCTAssertThrowsError(try validateCoordinateAppPostReceiver(focusedWindowMatches: false))
     }
 
-    func testAXAbsenceAndCommunicationFailuresRemainDistinct() throws {
-        XCTAssertFalse(try coordinateHitTestHasElement(.noValue))
-        XCTAssertFalse(try coordinateHitTestHasElement(.notImplemented))
+    func testUnavailableAXLookupAllowsWindowDirectedFallbackButPermissionsDoNot() throws {
+        for code in [
+            AXError.noValue,
+            .notImplemented,
+            .attributeUnsupported,
+            .cannotComplete,
+            .invalidUIElement,
+            .failure
+        ] {
+            XCTAssertFalse(try coordinateHitTestHasElement(code))
+        }
         XCTAssertTrue(try coordinateHitTestHasElement(.success))
-        for code in [AXError.cannotComplete, .invalidUIElement, .apiDisabled, .illegalArgument, .failure] {
+        for code in [AXError.apiDisabled, .illegalArgument] {
             XCTAssertThrowsError(try coordinateHitTestHasElement(code))
         }
     }
@@ -149,7 +171,12 @@ final class CoordinateWindowTests: XCTestCase {
     func testUnknownAXWindowUsesMouseWithoutInvokingAX() throws {
         var mouseCount = 0
         try dispatchCoordinateClick(
-            at: point, target: CoordinateClickTarget(role: kAXButtonRole, frame: bounds, actions: [kAXPressAction], belongsToWindow: nil),
+            at: point, target: CoordinateClickTarget(
+                role: kAXButtonRole,
+                frame: bounds,
+                actions: [kAXPressAction],
+                belongsToWindow: nil
+            ),
             button: .left, clickCount: 1, validateWindow: {},
             performAX: { _ in XCTFail("unverified AX target must not execute"); return .success },
             performMouse: { mouseCount += 1 }

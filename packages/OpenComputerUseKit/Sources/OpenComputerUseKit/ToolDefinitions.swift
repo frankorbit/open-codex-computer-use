@@ -148,6 +148,18 @@ public enum ToolDefinitions {
             )
         ),
         ToolDefinition(
+            name: "paste_text",
+            description: "Paste plain text into a visually verified editor using background sky_key. Does not require AX text focus. Writes plain text to the system clipboard and leaves it there after submission so asynchronous paste cannot read restored old data. Only pre-submission failures restore prior contents when still owned. Observe after input; never retry an unknown result.",
+            annotations: defaultAnnotations(),
+            inputSchema: objectSchema(
+                properties: [
+                    "app": stringProperty(description: "App name or bundle identifier"),
+                    "text": stringProperty(description: "Plain text to paste"),
+                ],
+                required: ["app", "text"]
+            )
+        ),
+        ToolDefinition(
             name: "type_text",
             description: "Type literal text using keyboard input. This tool is part of plugin `Computer Use`.",
             annotations: defaultAnnotations(),
@@ -195,7 +207,7 @@ private func readOnlyAnnotations() -> [String: Any] {
 
 private func keyMethodProperty() -> [String: Any] {
     stringProperty(
-        description: "Keyboard delivery: auto (default) or sky_key. Both use the target-window SkyLight path when the app is in the background and directed keyboard events when already foreground. Text input validates the live editable receiver; keys validate the bound window. Requires a current target window from get_app_state. Observe afterwards to verify the effect.",
+        description: "Keyboard delivery: auto (default) or sky_key. Both use the target-window SkyLight path when the app is in the background and directed keyboard events when already foreground. Auto validates live AX receivers. Explicit sky_key validates the live process and bound window without requiring AX focus; use only after visually verifying the intended input area. Requires a current target window from get_app_state. Observe afterwards to verify the effect.",
         enumValues: KeyMethod.allCases.map(\.rawValue)
     )
 }

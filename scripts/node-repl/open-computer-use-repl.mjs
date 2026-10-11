@@ -44,6 +44,7 @@ The runtime exposes an asynchronous app-bound API:
 - \`await app.scroll(elementIndex, direction, pages?)\`
 - \`await app.drag([fromX, fromY], [toX, toY])\`
 - \`await app.typeText(text, { keyMethod? })\`
+- \`await app.paste(text, { format?: "text" })\` (macOS plain text; leaves pasted text in the clipboard after submission)
 - \`await app.pressKey(key, { keyMethod? })\`
 - \`await app.setValue(elementIndex, value)\`
 - \`await app.performSecondaryAction(elementIndex, action)\`
@@ -298,6 +299,14 @@ export function createCuaApi(native, activeOutput) {
       },
       async setValue(elementIndex, value) { await call("set_value", { app, element_index: elementIndex, value }); },
       async typeText(text, options = {}) { await call("type_text", { app, text, ...optionsToKeyArgs(options) }); },
+      async paste(text, options = {}) {
+        if (typeof text !== "string" || !options || typeof options !== "object" || Array.isArray(options) ||
+            Object.keys(options).some(key => key !== "format") ||
+            (options.format !== undefined && options.format !== "text")) {
+          throw new Error('paste requires a string and supports only { format: "text" }');
+        }
+        await call("paste_text", { app, text });
+      },
       async performSecondaryAction(elementIndex, action) { await call("perform_secondary_action", { app, element_index: elementIndex, action }); },
     });
   }

@@ -185,11 +185,11 @@ final class ExecutionPolicyTests: XCTestCase {
     func testAppPostRejectsWrongWindowWithoutInputAndDoesNotRetryUnknownDelivery() throws {
         var attempts = 0
         XCTAssertThrowsError(try dispatchAppPostInput(policy: .background, validateReceiver: {
-            try validateCoordinateAppPostReceiver(frontmostPID: 1, expectedPID: 1, focusedWindowMatches: false)
+            try validateCoordinateAppPostReceiver(focusedWindowMatches: false)
         }, submit: { attempts += 1 }))
         XCTAssertEqual(attempts, 0)
         XCTAssertThrowsError(try dispatchAppPostInput(policy: .background, validateReceiver: {
-            try validateCoordinateAppPostReceiver(frontmostPID: 1, expectedPID: 1, focusedWindowMatches: true)
+            try validateCoordinateAppPostReceiver(focusedWindowMatches: true)
         }, submit: { attempts += 1; throw ComputerUseError.message("unknown") }))
         XCTAssertEqual(attempts, 1)
         try dispatchAppPostInput(policy: .compatible, validateReceiver: { XCTFail("legacy receiver behavior changed") },
@@ -197,24 +197,48 @@ final class ExecutionPolicyTests: XCTestCase {
         XCTAssertEqual(attempts, 2)
     }
 
-    func testBackgroundScrollCanSubmitToVerifiedWindowWhileClickAndDragCannot() throws {
+    func testAppPostRevalidatesWindowAfterOptionalAXLookupBeforeInput() throws {
+        for changesDuringLookup in [false, true] {
+            var phases: [String] = []
+            var changed = false
+            let operation = {
+                try dispatchAppPostInput(policy: .background, validateReceiver: {
+                    try validateCoordinateAppPostTarget(validateWindow: {
+                        phases.append("window")
+                        if changed { throw ComputerUseError.stateUnavailable("window changed") }
+                    }, readFocusedWindowMatch: {
+                        phases.append("lookup")
+                        changed = changesDuringLookup
+                        return nil
+                    })
+                }, submit: { phases.append("input") })
+            }
+            if changesDuringLookup {
+                XCTAssertThrowsError(try operation())
+                XCTAssertEqual(phases, ["window", "lookup", "window"])
+            } else {
+                try operation()
+                XCTAssertEqual(phases, ["window", "lookup", "window", "input"])
+            }
+        }
+    }
+
+    func testBackgroundAppPostAcceptsOptionalAXAndNeverRetriesUnknownInput() throws {
+        for matches: Bool? in [true, nil] {
+            var submissions = 0
+            try dispatchAppPostInput(policy: .background, validateReceiver: {
+                try validateCoordinateAppPostReceiver(focusedWindowMatches: matches)
+            }, submit: { submissions += 1 })
+            XCTAssertEqual(submissions, 1)
+        }
         var submissions = 0
-        try dispatchAppPostInput(policy: .background, validateReceiver: {
-            try validateCoordinateAppPostReceiver(
-                frontmostPID: 999, expectedPID: 123, focusedWindowMatches: true, requiresForeground: false
-            )
-        }, submit: { submissions += 1 })
-        XCTAssertEqual(submissions, 1)
         XCTAssertThrowsError(try dispatchAppPostInput(policy: .background, validateReceiver: {
-            try validateCoordinateAppPostReceiver(
-                frontmostPID: 999, expectedPID: 123, focusedWindowMatches: false, requiresForeground: false
-            )
+            try validateCoordinateAppPostReceiver(focusedWindowMatches: false)
         }, submit: { submissions += 1 }))
+        XCTAssertEqual(submissions, 0)
         XCTAssertThrowsError(try dispatchAppPostInput(policy: .background, validateReceiver: {
-            try validateCoordinateAppPostReceiver(
-                frontmostPID: 999, expectedPID: 123, focusedWindowMatches: true
-            )
-        }, submit: { submissions += 1 }))
+            try validateCoordinateAppPostReceiver(focusedWindowMatches: nil)
+        }, submit: { submissions += 1; throw ComputerUseError.message("unknown input") }))
         XCTAssertEqual(submissions, 1)
     }
 

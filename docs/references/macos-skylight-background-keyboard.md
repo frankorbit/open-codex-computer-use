@@ -41,3 +41,26 @@
 ## 兼容性检查
 
 `sky_key` 复用 `sky_click` 的五个私有符号，缺任一个都 fail closed。macOS 更新后重新跑 `OPEN_COMPUTER_USE_RUN_SKY_KEY_LIVE_TEST=1 swift test --filter SkyKeyboardLiveTests`。
+
+## 2026-10-11 fork 的 AX 缺失兼容输入
+
+上游参考提交 `3cfe4b1` 的显式 `sky_key` 不要求 AX 文本焦点。fork 恢复该边界：
+显式 `type_text` / `press_key` 校验运行进程与观察窗口归属，并在合成 key-window 状态下重新校验。
+窗口已失效、隐藏、已知前台 AX 窗口变更仍拒绝。默认 `auto` 保留 fork 原有 AX 焦点保护，不能称为完全恢复上游默认策略。
+
+新增 `paste_text` / `app.paste(text, { format: "text" })` 是 macOS 扩展，上游尚无此 API。
+它使用相同的窗口绑定和 `super+v` 菜单/按键路径，不使用全局输入或 Raise。调用须在工作线程，且主线程运行 AppKit run loop。
+剪贴板按原始格式保存（最多 64 项、每项 128 格式、16 MiB），输入最多 8 MiB。无法完整保存时不清空剪贴板。
+粘贴期间提供延迟文字，最多等待 1 秒读取回执，整个过程处于合成焦点生命周期内。
+回执仅证明某个读取者请求了文字，不能证明目标编辑器接受输入；仍须重新截图核对。
+超时或未知输入不自动重放，恢复剪贴板失败会显式报错。
+
+恢复使用 `changeCount` 与私有所有者标记，发现其他复制则保留新内容。系统没有原子 CAS，
+检查与写入间仍存在短暂竞争窗口；不能保证任意并发写者下完全隔离。剪贴板管理器也可能读取临时内容。
+尚未完成修改后网易云实机验收，Codex 用户确认的后台成功样本不能作为本实现验收或闭源内部实现证据。
+
+### 2026-10-11 输入策略复审修正
+
+可选 AX 查询失败与输入动作失败分开处理：前者允许独立窗口复验后的定向输入，后者保持未知结果不重放。自然进入前台不再是中止理由。后台 app_post 放开系统前台/强制 AX 焦点要求，保留已知窗口冲突拒绝。当前策略见架构文档和输入策略对齐记录，早期严格前台门禁描述已被本次修正取代。
+
+`python3 scripts/check-sky-core-parity.py` 对 SkyLightSPI、AgentDisplay、WindowOcclusionKeepAlive 逐字节核对上游 3cfe4b1；需本地已存在对应 Git 对象，不自动联网。其他策略与扩展不宣称字节一致。

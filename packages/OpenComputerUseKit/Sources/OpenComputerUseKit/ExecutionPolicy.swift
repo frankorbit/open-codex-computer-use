@@ -41,7 +41,7 @@ func performWindowRecovery(
     return recover()
 }
 
-/// postToPid 没有窗口定向保证；严格模式须在发送前确认实际接收窗口。
+/// postToPid 没有窗口定向保证；后台模式校验目标窗口并拒绝已知的接收窗口冲突。
 func dispatchAppPostInput(
     policy: ExecutionPolicy,
     validateReceiver: () throws -> Void,

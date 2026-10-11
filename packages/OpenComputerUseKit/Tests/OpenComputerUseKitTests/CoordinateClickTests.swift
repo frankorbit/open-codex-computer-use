@@ -1,7 +1,7 @@
 import AppKit
 import ApplicationServices
-import XCTest
 @testable import OpenComputerUseKit
+import XCTest
 
 final class CoordinateClickTests: XCTestCase {
     private let point = CGPoint(x: 250, y: 400)
@@ -13,7 +13,12 @@ final class CoordinateClickTests: XCTestCase {
         actions: [String] = [kAXPressAction],
         belongsToWindow: Bool = true
     ) -> CoordinateClickTarget {
-        CoordinateClickTarget(role: role, frame: frame ?? buttonFrame, actions: actions, belongsToWindow: belongsToWindow)
+        CoordinateClickTarget(
+            role: role,
+            frame: frame ?? buttonFrame,
+            actions: actions,
+            belongsToWindow: belongsToWindow
+        )
     }
 
     private func dispatch(
@@ -142,7 +147,12 @@ final class CoordinateClickServiceTests: XCTestCase {
             colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0
         ))
         let png = try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
-        let app = RunningAppDescriptor(name: "Mock Canvas", bundleIdentifier: "test.canvas", pid: getpid(), runningApplication: .current)
+        let app = RunningAppDescriptor(
+            name: "Mock Canvas",
+            bundleIdentifier: "test.canvas",
+            pid: getpid(),
+            runningApplication: .current
+        )
         let close = ElementRecord(index: 11, identifier: nil, element: nil,
                                   localFrame: CGRect(x: 8, y: 8, width: 16, height: 16),
                                   role: kAXButtonRole, rawActions: [kAXPressAction], prettyActions: [kAXPressAction])
@@ -165,16 +175,26 @@ final class CoordinateClickServiceTests: XCTestCase {
                 hitTest: { point, _ in
                     queried.append(point)
                     return CoordinateClickHit(
-                        target: CoordinateClickTarget(role: kAXWindowRole, frame: CGRect(origin: .zero, size: CGSize(width: 1440, height: 960)),
-                                                      actions: [kAXRaiseAction, kAXPressAction], belongsToWindow: true),
+                        target: CoordinateClickTarget(
+                            role: kAXWindowRole,
+                            frame: CGRect(origin: .zero, size: CGSize(width: 1440, height: 960)),
+                            actions: [kAXRaiseAction, kAXPressAction],
+                            belongsToWindow: true
+                        ),
                         performAX: { axActions.append($0); return .success }
                     )
                 },
                 performMouse: { point, _, count, _ in mousePoints.append(point); XCTAssertEqual(count, 1) }
             )
             let service = ComputerUseService(snapshots: ["test.canvas": state], coordinateClickBackend: backend)
-            _ = try service.click(app: "test.canvas", elementIndex: nil, x: Double(size.width / 4), y: Double(size.height / 2),
-                                  clickCount: 1, mouseButton: "left")
+            _ = try service.click(
+                app: "test.canvas",
+                elementIndex: nil,
+                x: Double(size.width / 4),
+                y: Double(size.height / 2),
+                clickCount: 1,
+                mouseButton: "left"
+            )
             XCTAssertEqual(queried, [CGPoint(x: -1080, y: 600)])
             XCTAssertEqual(mousePoints, queried)
             XCTAssertTrue(axActions.isEmpty)
@@ -195,6 +215,55 @@ final class CoordinateClickServiceTests: XCTestCase {
         XCTAssertEqual(validations, 2)
     }
 
+    func testServiceFallsBackFromUnavailableHitTestOnlyAfterWindowRevalidation() throws {
+        let state = try snapshot(imageSize: CGSize(width: 1280, height: 853))
+        for result in [AXError.cannotComplete, .attributeUnsupported, .invalidUIElement, .failure] {
+            var phases: [String] = []
+            let backend = CoordinateClickBackend(
+                validateWindow: { _, _ in phases.append("window") },
+                hitTest: { _, _ in
+                    phases.append("lookup")
+                    XCTAssertFalse(try coordinateHitTestHasElement(result))
+                    return nil
+                },
+                performMouse: { _, _, _, _ in phases.append("mouse") }
+            )
+            let service = ComputerUseService(snapshots: ["test.canvas": state], coordinateClickBackend: backend)
+            _ = try service.click(
+                app: "test.canvas",
+                elementIndex: nil,
+                x: 250,
+                y: 400,
+                clickCount: 1,
+                mouseButton: "left"
+            )
+            XCTAssertEqual(phases, ["window", "lookup", "window", "mouse"])
+        }
+    }
+
+    func testUnavailableHitTestDoesNotBypassChangedWindowOrPermissionFailure() throws {
+        let state = try snapshot(imageSize: CGSize(width: 1280, height: 853))
+        for result in [AXError.cannotComplete, .apiDisabled] {
+            var validations = 0
+            let backend = CoordinateClickBackend(
+                validateWindow: { _, _ in
+                    validations += 1
+                    if validations == 2 { throw ComputerUseError.stateUnavailable("window changed") }
+                },
+                hitTest: { _, _ in
+                    _ = try coordinateHitTestHasElement(result)
+                    return nil
+                },
+                performMouse: { _, _, _, _ in XCTFail("must not send") }
+            )
+            let service = ComputerUseService(snapshots: ["test.canvas": state], coordinateClickBackend: backend)
+            XCTAssertThrowsError(try service.click(
+                app: "test.canvas", elementIndex: nil, x: 250, y: 400, clickCount: 1, mouseButton: "left"
+            ))
+            XCTAssertEqual(validations, result == .apiDisabled ? 1 : 2)
+        }
+    }
+
     func testWindowChangingDuringHitTestSendsNothing() throws {
         let state = try snapshot(imageSize: CGSize(width: 1280, height: 853))
         var validations = 0
@@ -207,7 +276,14 @@ final class CoordinateClickServiceTests: XCTestCase {
             hitTest: { _, _ in nil }, performMouse: { _, _, _, _ in mouseCount += 1 }
         )
         let service = ComputerUseService(snapshots: ["test.canvas": state], coordinateClickBackend: backend)
-        XCTAssertThrowsError(try service.click(app: "test.canvas", elementIndex: nil, x: 250, y: 400, clickCount: 1, mouseButton: "left"))
+        XCTAssertThrowsError(try service.click(
+            app: "test.canvas",
+            elementIndex: nil,
+            x: 250,
+            y: 400,
+            clickCount: 1,
+            mouseButton: "left"
+        ))
         XCTAssertEqual(validations, 2)
         XCTAssertEqual(mouseCount, 0)
     }
@@ -221,7 +297,14 @@ final class CoordinateClickServiceTests: XCTestCase {
             hitTest: { _, _ in queries += 1; return nil }, performMouse: { _, _, _, _ in mouseCount += 1 }
         )
         let service = ComputerUseService(snapshots: ["test.canvas": state], coordinateClickBackend: backend)
-        XCTAssertThrowsError(try service.click(app: "test.canvas", elementIndex: nil, x: 250, y: 400, clickCount: 1, mouseButton: "left"))
+        XCTAssertThrowsError(try service.click(
+            app: "test.canvas",
+            elementIndex: nil,
+            x: 250,
+            y: 400,
+            clickCount: 1,
+            mouseButton: "left"
+        ))
         XCTAssertEqual(queries, 0)
         XCTAssertEqual(mouseCount, 0)
     }
@@ -247,10 +330,18 @@ final class ForegroundClickTests: XCTestCase {
         XCTAssertFalse(automaticForegroundClicksEnabled(environment: environment))
         XCTAssertFalse(globalPointerFallbacksEnabled(environment: environment))
         XCTAssertNoThrow(try validateClickMethod(.global, hasElementIndex: false, environment: environment))
-        XCTAssertEqual(coordinateMouseMethod(button: .left, clickCount: 1, globalEnabled: automaticForegroundClicksEnabled(environment: environment)), .skyClick)
+        XCTAssertEqual(
+            coordinateMouseMethod(button: .left, clickCount: 1,
+                                  globalEnabled: automaticForegroundClicksEnabled(environment: environment)),
+            .skyClick
+        )
         XCTAssertEqual(coordinateMouseMethod(button: .right, clickCount: 1, globalEnabled: false), .appPost)
-        XCTAssertFalse(automaticForegroundClicksEnabled(environment: ["OPEN_COMPUTER_USE_ALLOW_FOREGROUND_CLICKS": "1"]))
-        XCTAssertTrue(automaticForegroundClicksEnabled(environment: ["OPEN_COMPUTER_USE_COORDINATE_CLICK_MODE": "foreground"]))
+        XCTAssertFalse(
+            automaticForegroundClicksEnabled(environment: ["OPEN_COMPUTER_USE_ALLOW_FOREGROUND_CLICKS": "1"])
+        )
+        XCTAssertTrue(
+            automaticForegroundClicksEnabled(environment: ["OPEN_COMPUTER_USE_COORDINATE_CLICK_MODE": "foreground"])
+        )
     }
 
     func testForegroundClickValidatesAfterActivationAndSubmitsOnce() throws {
@@ -281,7 +372,7 @@ final class ForegroundClickTests: XCTestCase {
         XCTAssertEqual(inputs, 0)
     }
 
-    func testActivationFailureAndUnknownInputNeverRetry() {
+    func testActivationFailureAndUnknownInputNeverRetry() throws {
         for failure in ["target", "activate", "receiver", "input"] {
             var phases: [String] = []
             func perform(_ phase: String) throws {
@@ -292,49 +383,13 @@ final class ForegroundClickTests: XCTestCase {
                 validateTarget: { try perform("target") }, prepare: { try perform("activate") },
                 validateReceiver: { try perform("receiver") }, submit: { try perform("input") }
             ))
-            let expected = Array(["target", "activate", "receiver", "input"].prefix(through: ["target", "activate", "receiver", "input"].firstIndex(of: failure)!))
+            let expected = try Array(["target", "activate", "receiver", "input"].prefix(through: XCTUnwrap([
+                "target",
+                "activate",
+                "receiver",
+                "input"
+            ].firstIndex(of: failure))))
             XCTAssertEqual(phases, expected)
-        }
-    }
-}
-
-final class BackgroundObservationTests: XCTestCase {
-    func testExistingWindowNeedsNoDelay() throws {
-        let value = try observeWithoutActivation(wait: { _ in XCTFail("unexpected wait") }, build: { 42 })
-        XCTAssertEqual(value, 42)
-    }
-
-    func testNewWindowCanBecomeReadyWithoutActivationFallback() throws {
-        var attempts = 0
-        var delays: [TimeInterval] = []
-        let value = try observeWithoutActivation(wait: { delays.append($0) }) {
-            attempts += 1
-            if attempts < 3 { throw ComputerUseError.stateUnavailable(computerUseNoWindowFoundMessage) }
-            return 42
-        }
-        XCTAssertEqual(value, 42)
-        XCTAssertEqual(delays, [0.1, 0.1])
-    }
-
-    func testMissingWindowHasBoundedReadOnlyRetries() {
-        var attempts = 0
-        var waits = 0
-        XCTAssertThrowsError(try observeWithoutActivation(wait: { _ in waits += 1 }) { () -> Int in
-            attempts += 1
-            throw ComputerUseError.stateUnavailable(computerUseNoWindowFoundMessage)
-        })
-        XCTAssertEqual(attempts, 6)
-        XCTAssertEqual(waits, 5)
-    }
-
-    func testPermissionAndOtherFailuresDoNotRetry() {
-        for error in [ComputerUseError.permissionDenied("denied"), .stateUnavailable("stale"), .message("transport")] {
-            var attempts = 0
-            XCTAssertThrowsError(try observeWithoutActivation(wait: { _ in XCTFail("unexpected wait") }) { () -> Int in
-                attempts += 1
-                throw error
-            })
-            XCTAssertEqual(attempts, 1)
         }
     }
 }

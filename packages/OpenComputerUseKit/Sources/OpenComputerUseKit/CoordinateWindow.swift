@@ -84,11 +84,19 @@ private func coordinateWindowBounds(_ info: [String: Any]) -> CGRect? {
     return CGRect(dictionaryRepresentation: value as CFDictionary)
 }
 
-func validateCoordinateAppPostReceiver(
-    frontmostPID: pid_t?, expectedPID: pid_t, focusedWindowMatches: Bool, requiresForeground: Bool = true
-) throws {
-    // 点击/拖拽保留前台约束；滚轮允许后台，但仍须证明目标 App 的当前焦点窗口匹配。
-    guard (!requiresForeground || frontmostPID == expectedPID), focusedWindowMatches else {
-        throw ComputerUseError.stateUnavailable("app_post receiver does not match the required snapshot window; observe again")
+func validateCoordinateAppPostReceiver(focusedWindowMatches: Bool?) throws {
+    // 进程和窗口已独立校验。AX 不可用可定向投递，已知错误窗口则必须拒绝。
+    guard focusedWindowMatches != false else {
+        throw ComputerUseError.stateUnavailable("app_post receiver does not match the snapshot window; observe again")
     }
+}
+
+/// 可选 AX IPC 前后都检查窗口；已知错误接收者不能因降级而绕过。
+func validateCoordinateAppPostTarget(
+    validateWindow: () throws -> Void,
+    readFocusedWindowMatch: () throws -> Bool?
+) throws {
+    try validateWindow()
+    try validateCoordinateAppPostReceiver(focusedWindowMatches: readFocusedWindowMatch())
+    try validateWindow()
 }

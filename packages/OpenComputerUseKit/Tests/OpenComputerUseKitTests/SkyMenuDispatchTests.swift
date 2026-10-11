@@ -17,7 +17,7 @@ final class SkyMenuDispatchTests: XCTestCase {
                 findMenuItem: { receiverMatches = false; return foundItem ? 1 : nil },
                 validateReceiver: { if !receiverMatches { throw TestError.receiverChanged } },
                 pressMenuItem: { _ in submissions += 1 },
-                postKey: { submissions += 1 },
+                postKey: { submissions += 1 }
             ))
             XCTAssertEqual(submissions, 0)
         }
@@ -30,7 +30,7 @@ final class SkyMenuDispatchTests: XCTestCase {
                 findMenuItem: { phases.append("lookup"); return foundItem ? 1 : nil },
                 validateReceiver: { phases.append("validate") },
                 pressMenuItem: { _ in phases.append("menu") },
-                postKey: { phases.append("key") },
+                postKey: { phases.append("key") }
             )
             XCTAssertEqual(phases, ["validate", "lookup", "validate", foundItem ? "menu" : "key"])
         }
@@ -41,7 +41,7 @@ final class SkyMenuDispatchTests: XCTestCase {
             findMenuItem: { XCTFail("unexpected lookup"); return 1 },
             validateReceiver: { throw TestError.receiverChanged },
             pressMenuItem: { _ in XCTFail("unexpected menu action") },
-            postKey: { XCTFail("unexpected key") },
+            postKey: { XCTFail("unexpected key") }
         ))
     }
 
@@ -51,7 +51,7 @@ final class SkyMenuDispatchTests: XCTestCase {
             findMenuItem: { 1 },
             validateReceiver: {},
             pressMenuItem: { _ in attempts += 1; throw TestError.unknownDelivery },
-            postKey: { XCTFail("must not replay using keys") },
+            postKey: { XCTFail("must not replay using keys") }
         ))
         XCTAssertEqual(attempts, 1)
     }
@@ -62,7 +62,7 @@ final class SkyMenuDispatchTests: XCTestCase {
             findMenuItem: { nil as Int? },
             validateReceiver: {},
             pressMenuItem: { _ in XCTFail("unexpected menu action") },
-            postKey: { attempts += 1; throw TestError.unknownDelivery },
+            postKey: { attempts += 1; throw TestError.unknownDelivery }
         ))
         XCTAssertEqual(attempts, 1)
     }
@@ -84,27 +84,54 @@ final class SkyMenuDispatchTests: XCTestCase {
             let enabled = try readSkyMenuAttribute(kAXEnabledAttribute, read: { (result, nil) }) as? NSNumber
             XCTAssertFalse(skyMenuItemMatches(
                 cmdChar: "W", cmdModifiers: modifiers?.intValue, enabled: enabled?.boolValue,
-                equivalent: SkyMenuKeyEquivalent(character: "W", modifiers: 0),
+                equivalent: SkyMenuKeyEquivalent(character: "W", modifiers: 0)
             ))
         }
     }
 
-    func testAXQueryFailureStopsDispatchInsteadOfBecomingMissingMenu() {
-        for attribute in ["AXMenuItemCmdModifiers", kAXEnabledAttribute, kAXChildrenAttribute, kAXMenuBarAttribute] {
-            for result in [AXError.cannotComplete, .invalidUIElement, .failure, .notImplemented] {
-                var reads = 0
-                XCTAssertThrowsError(try dispatchSkyMenuKey(
-                    findMenuItem: { () throws -> Int? in
-                        _ = try readSkyMenuAttribute(attribute) { reads += 1; return (result, nil) }
-                        return nil
-                    },
-                    validateReceiver: {},
-                    pressMenuItem: { _ in XCTFail("unexpected menu action") },
-                    postKey: { XCTFail("query failure must not become keyboard fallback") },
-                ))
-                XCTAssertEqual(reads, 1)
-            }
+    func testUnavailableMenuLookupFallsBackOnceAfterRevalidation() throws {
+        for result in [AXError.cannotComplete, .invalidUIElement, .failure, .notImplemented] {
+            var phases: [String] = []
+            try dispatchSkyMenuKey(
+                findMenuItem: { () throws -> Int? in
+                    phases.append("lookup")
+                    _ = try readSkyMenuAttribute(kAXMenuBarAttribute) { (result, nil) }
+                    return nil
+                },
+                validateReceiver: { phases.append("validate") },
+                pressMenuItem: { _ in XCTFail("no menu is known") },
+                postKey: { phases.append("key") }
+            )
+            XCTAssertEqual(phases, ["validate", "lookup", "validate", "key"])
         }
+    }
+
+    func testPermissionAndInvalidQueryArgumentsNeverFallback() {
+        for result in [AXError.apiDisabled, .illegalArgument] {
+            XCTAssertThrowsError(try dispatchSkyMenuKey(
+                findMenuItem: { () throws -> Int? in
+                    _ = try readSkyMenuAttribute(kAXMenuBarAttribute) { (result, nil) }
+                    return nil
+                },
+                validateReceiver: {},
+                pressMenuItem: { _ in XCTFail("must not send") },
+                postKey: { XCTFail("must not send") }
+            ))
+        }
+    }
+
+    func testUnavailableMenuDoesNotOverrideKnownReceiverChange() {
+        var matches = true
+        XCTAssertThrowsError(try dispatchSkyMenuKey(
+            findMenuItem: { () throws -> Int? in
+                _ = try readSkyMenuAttribute(kAXMenuBarAttribute) { (.cannotComplete, nil) }
+                matches = false
+                return nil
+            },
+            validateReceiver: { try validateCoordinateAppPostReceiver(focusedWindowMatches: matches) },
+            pressMenuItem: { _ in XCTFail("must not send") },
+            postKey: { XCTFail("must not send") }
+        ))
     }
 
     func testSuccessfulAttributeReadPreservesValue() throws {

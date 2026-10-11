@@ -1,3 +1,4 @@
+import Foundation
 @testable import OpenComputerUseKit
 import XCTest
 
@@ -9,7 +10,7 @@ final class SkyKeyboardFocusTests: XCTestCase {
         XCTAssertThrowsError(try withSkyKeyboardFocus(
             begin: { 1 }, prepare: { _ in throw Failure.prepare },
             deliver: { XCTFail("must not deliver after focus failure") },
-            end: { _ in cleanupCount += 1 },
+            end: { _ in cleanupCount += 1 }
         )) { XCTAssertTrue($0 is Failure) }
         XCTAssertEqual(cleanupCount, 1)
     }
@@ -20,7 +21,7 @@ final class SkyKeyboardFocusTests: XCTestCase {
         XCTAssertThrowsError(try withSkyKeyboardFocus(
             begin: { 1 }, prepare: { _ in },
             deliver: { attempts += 1; throw Failure.input },
-            end: { _ in cleanupCount += 1 },
+            end: { _ in cleanupCount += 1 }
         )) { XCTAssertTrue($0 is Failure) }
         XCTAssertEqual(attempts, 1)
         XCTAssertEqual(cleanupCount, 1)
@@ -33,7 +34,7 @@ final class SkyKeyboardFocusTests: XCTestCase {
             XCTAssertThrowsError(try withSkyKeyboardFocus(
                 begin: { 1 }, prepare: { _ in },
                 deliver: { attempts += 1; if inputFails { throw Failure.input } },
-                end: { _ in cleanupCount += 1; throw Failure.cleanup },
+                end: { _ in cleanupCount += 1; throw Failure.cleanup }
             )) { error in
                 XCTAssertTrue(error.localizedDescription.contains("release synthetic focus"))
                 XCTAssertTrue(error.localizedDescription.contains("unknown"))
@@ -43,69 +44,82 @@ final class SkyKeyboardFocusTests: XCTestCase {
         }
     }
 
-    func testBackgroundTakeoverBeforeDeliveryStopsInputAndReleasesFocus() {
-        var currentPID: Int32 = 1
-        var cleaned = false
-        XCTAssertThrowsError(try withSkyKeyboardFocus(
-            begin: { Int32(2) },
-            prepare: { targetPID in
-                currentPID = targetPID
-                try validateSkyKeyboardBackground(
-                    required: true, initialPID: 1, currentPID: currentPID,
-                    targetPID: targetPID, inputMayHaveOccurred: false,
-                )
+    func testProductionDispatcherContinuesAfterTargetBecomesForeground() throws {
+        for transitionPhase in ["prepare", "input"] {
+            var frontmost: pid_t? = 1
+            var phases: [String] = []
+            let backend = backend(frontmost: { frontmost }, phases: { phases.append($0) }, prepare: {
+                if transitionPhase == "prepare" { frontmost = 2 }
+            })
+            try SkyKeyboardDispatcher.deliver(to: .init(windowID: 42, pid: 2), backend: backend) { validate in
+                try deliverKeyboardTextChunks([[65], [66]], validateReceiver: validate, submit: { _ in
+                    phases.append("input")
+                    frontmost = 2
+                })
+            }
+            XCTAssertEqual(phases.count(where: { $0 == "input" }), 2)
+            XCTAssertEqual(phases.count(where: { $0 == "begin" }), 1)
+            XCTAssertEqual(phases.last, "end")
+            XCTAssertEqual(frontmost, 2)
+        }
+    }
+
+    func testProductionForegroundRouteSkipsSyntheticFocusButStillValidates() throws {
+        var phases: [String] = []
+        let backend = backend(frontmost: { 2 }, phases: { phases.append($0) })
+        try SkyKeyboardDispatcher.deliver(to: .init(windowID: 42, pid: 2), backend: backend) { validate in
+            try validate()
+            phases.append("input")
+        }
+        XCTAssertEqual(phases, ["validate", "validate", "input"])
+    }
+
+    func testProductionDispatcherStopsChangedWindowAfterPartialInputAndCleansUp() {
+        var phases: [String] = []
+        var valid = true
+        var backend = backend(frontmost: { 1 }, phases: { phases.append($0) })
+        backend.validateTarget = { _ in
+            if !valid { throw Failure.input }
+        }
+        XCTAssertThrowsError(try SkyKeyboardDispatcher.deliver(
+            to: .init(windowID: 42, pid: 2), backend: backend
+        ) { validate in
+            try deliverKeyboardTextChunks([[65], [66]], validateReceiver: validate, submit: { _ in
+                phases.append("input")
+                valid = false
+            })
+        }) { XCTAssertTrue($0.localizedDescription.contains("some text may already")) }
+        XCTAssertEqual(phases.count(where: { $0 == "input" }), 1)
+        XCTAssertEqual(phases.count(where: { $0 == "end" }), 1)
+    }
+
+    func testProductionPreparationFailureCleansUpWithoutInput() {
+        var phases: [String] = []
+        let backend = backend(frontmost: { 1 }, phases: { phases.append($0) }, prepare: { throw Failure.prepare })
+        XCTAssertThrowsError(try SkyKeyboardDispatcher.deliver(
+            to: .init(windowID: 42, pid: 2), backend: backend
+        ) { _ in XCTFail("must not send") })
+        XCTAssertEqual(phases.count(where: { $0 == "end" }), 1)
+    }
+
+    private func backend(
+        frontmost: @escaping () -> pid_t?, phases: @escaping (String) -> Void,
+        prepare: @escaping () throws -> Void = {}
+    ) -> SkyKeyboardDeliveryBackend {
+        SkyKeyboardDeliveryBackend(
+            frontmostPID: frontmost,
+            validateTarget: { target in XCTAssertEqual(target.windowID, 42); phases("validate") },
+            requireCapability: { phases("capability") },
+            begin: { target in
+                phases("begin")
+                return SkyLightSyntheticFocusContext(deactivateTarget: .init(
+                    psn: [], windowID: target.windowID, focused: false
+                ))
             },
-            deliver: { XCTFail("background takeover must stop delivery") },
-            end: { _ in cleaned = true },
-        )) { XCTAssertTrue($0.localizedDescription.contains("No keyboard input was sent")) }
-        XCTAssertTrue(cleaned)
-    }
-
-    func testBackgroundTakeoverAfterDeliveryReportsUnknown() {
-        XCTAssertThrowsError(try validateSkyKeyboardBackground(
-            required: true, initialPID: 1, currentPID: 2, targetPID: 2,
-            inputMayHaveOccurred: true,
-        )) { XCTAssertTrue($0.localizedDescription.contains("effect is unknown")) }
-    }
-
-    func testExistingForegroundAndUserSwitchToOtherAppRemainAllowed() throws {
-        for (required, initial, current) in [(true, 2, 2), (true, 1, 3), (true, 1, 1), (false, 1, 2)] {
-            try validateSkyKeyboardBackground(
-                required: required, initialPID: Int32(initial), currentPID: Int32(current),
-                targetPID: 2, inputMayHaveOccurred: false,
-            )
-        }
-    }
-
-    func testTargetBecomingForegroundBetweenTextChunksStopsRemainingText() {
-        var currentPID: Int32 = 1
-        var submissions = 0
-        XCTAssertThrowsError(try deliverKeyboardTextChunks([[65], [66]], validateReceiver: {
-            try validateSkyKeyboardBackground(
-                required: true, initialPID: 1, currentPID: currentPID, targetPID: 2,
-                inputMayHaveOccurred: false,
-            )
-        }, submit: { _ in
-            submissions += 1
-            currentPID = 2
-        })) { XCTAssertTrue($0.localizedDescription.contains("some text may already have been entered")) }
-        XCTAssertEqual(submissions, 1)
-    }
-
-    func testTargetBecomingForegroundDuringMenuLookupPreventsBothRoutes() {
-        for found in [true, false] {
-            var currentPID: Int32 = 1
-            XCTAssertThrowsError(try dispatchSkyMenuKey(
-                findMenuItem: { currentPID = 2; return found ? 1 : nil },
-                validateReceiver: {
-                    try validateSkyKeyboardBackground(
-                        required: true, initialPID: 1, currentPID: currentPID, targetPID: 2,
-                        inputMayHaveOccurred: false,
-                    )
-                },
-                pressMenuItem: { _ in XCTFail("must not press menu after takeover") },
-                postKey: { XCTFail("must not send key after takeover") },
-            ))
-        }
+            makeKey: { _ in phases("prepare"); try prepare() },
+            waitForKey: { _ in phases("settle") },
+            releaseWait: { phases("release_wait") },
+            end: { _ in phases("end") }
+        )
     }
 }
