@@ -78,7 +78,8 @@ func coordinateMouseMethod(button: MouseButtonKind, clickCount: Int, globalEnabl
 
 // 点击策略与拖拽/滚动的全局指针开关分离，宿主可只启用前台点击。
 func foregroundClicksEnabled(environment: [String: String]) -> Bool {
-    environment["OPEN_COMPUTER_USE_COORDINATE_CLICK_MODE"]?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "foreground"
+    guard (try? ExecutionPolicy.current(environment: environment)) == .compatible else { return false }
+    return environment["OPEN_COMPUTER_USE_COORDINATE_CLICK_MODE"]?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "foreground"
         || environment["OPEN_COMPUTER_USE_ALLOW_FOREGROUND_CLICKS"] == "1"
         || globalPointerFallbacksEnabled(environment: environment)
 }
@@ -89,6 +90,7 @@ func dispatchForegroundClick(
     validateReceiver: () throws -> Void,
     submit: () throws -> Void
 ) throws {
+    try ExecutionPolicy.current().requireForeground("Global click")
     try validateTarget()
     try prepare()
     try validateReceiver()
@@ -98,6 +100,7 @@ func dispatchForegroundClick(
 
 // 明确的后台默认与显式全局点击授权分开；旧宿主未指定策略时保留原语义。
 func automaticForegroundClicksEnabled(environment: [String: String]) -> Bool {
+    guard (try? ExecutionPolicy.current(environment: environment)) == .compatible else { return false }
     if environment["OPEN_COMPUTER_USE_COORDINATE_CLICK_MODE"]?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "background" {
         return false
     }

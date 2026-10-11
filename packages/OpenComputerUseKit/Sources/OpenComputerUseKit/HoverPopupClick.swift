@@ -58,7 +58,9 @@ struct HoverPopupCache {
     private var leases: [String: HoverPopupLease] = [:]
 
     mutating func record(_ popups: [HoverPopupObservation], snapshot: AppSnapshot, now: TimeInterval) {
-        leases = Dictionary(uniqueKeysWithValues: popups.map {
+        clear()
+        guard (try? ExecutionPolicy.current()) == .compatible else { return }
+        leases = Dictionary(uniqueKeysWithValues: popups.filter(\.permitsInput).map {
             ($0.token.lowercased(), HoverPopupLease(
                 popup: $0,
                 rootWindowID: snapshot.targetWindowID,
@@ -87,6 +89,7 @@ func dispatchPopupClick<Result>(
     submit: () throws -> Void,
     readBack: () throws -> Result
 ) throws -> Result {
+    try ExecutionPolicy.current().requireForeground("Popup global click")
     try validate()
     do {
         try submit()

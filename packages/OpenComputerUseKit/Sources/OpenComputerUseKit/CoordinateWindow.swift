@@ -84,9 +84,11 @@ private func coordinateWindowBounds(_ info: [String: Any]) -> CGRect? {
     return CGRect(dictionaryRepresentation: value as CFDictionary)
 }
 
-func validateCoordinateAppPostReceiver(frontmostPID: pid_t?, expectedPID: pid_t, focusedWindowMatches: Bool) throws {
-    // app_post 只有 PID，没有窗口 ID；不能套用 sky_click 的后台和跨 Space 豁免。
-    guard frontmostPID == expectedPID, focusedWindowMatches else {
-        throw ComputerUseError.stateUnavailable("auto app_post requires the foreground app and focused snapshot window; observe again")
+func validateCoordinateAppPostReceiver(
+    frontmostPID: pid_t?, expectedPID: pid_t, focusedWindowMatches: Bool, requiresForeground: Bool = true
+) throws {
+    // 点击/拖拽保留前台约束；滚轮允许后台，但仍须证明目标 App 的当前焦点窗口匹配。
+    guard (!requiresForeground || frontmostPID == expectedPID), focusedWindowMatches else {
+        throw ComputerUseError.stateUnavailable("app_post receiver does not match the required snapshot window; observe again")
     }
 }

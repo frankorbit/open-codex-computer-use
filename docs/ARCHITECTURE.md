@@ -223,3 +223,13 @@ click MCP 回执中的 `_meta.ocuDiagnostic` 关联 `ai.today.ocu / input` 的 O
 自动动作回读关闭时，键盘仍实时检查接收者，不能使用点击前缓存的焦点。动作返回不证明输入已被应用消费；模型应在一轮 JS 的末尾显式观察并核对结果。后台键盘与真实鼠标是否不干扰用户，仍须对目标 App 做验收。这里复用上游 SkyLight 实现，不宣称复制闭源 Codex 的内部调用栈。
 
 文本按 Unicode 分块投递时，每块开始前重新核对同一个实时接收者；中途失效报告可能已有部分输入并停止，不重放全文。可编辑 ComboBox 必须有实时 editable 或 value-settable 证据；显式只读或禁用的文本控件拒绝输入。部分应用不暴露只读属性时，文本角色仅作为候选证据，最终结果仍需观察确认。
+
+### 宿主严格后台契约
+
+`OPEN_COMPUTER_USE_EXECUTION_MODE=background` 是执行策略，优先于所有旧 foreground/global/hover 开关。未设置保持兼容；空字符串或未知值在执行入口拒绝，不能默认为兼容。共用 `ExecutionPolicy.current()` 解析，SkyLight 后台准备与后台键盘仍可使用该策略。
+
+严格模式禁止 global 点击、移动真实鼠标的 hover、popup global 点击、显式 AXRaise、accessibility 的 activation-only fallback、快照 activate/unhide/raise/open 恢复，以及 global 滚动拖拽。显式 accessibility 的普通 AX 语义动作仍可执行；auto 坐标的 AX/SkyLight 路径和后台焦点恢复保留。初始化仍可使用既有 activates=false 的单次后台启动契约。
+
+`postToPid` 本身不等于抢前台。严格模式下滚轮保留后台投递，新增实时 focused-window、PID、几何及同 App 遮挡验证；不要求系统前台。现有 PID 鼠标点击和拖拽未编码目标窗口 ID，严格模式只允许已在前台、焦点窗口与绑定快照一致且点位实际接收者一致的情形，不主动激活窗口。因而后台 app_post 点击和后台 PID 拖拽会被拒绝，这是明确的兼容损失；未设置执行模式时保留旧行为。失败不切换 global、不重放。该策略限制 fork 主动发出的前台操作，不保证第三方 App 自身不会因 AX 动作或输入改变焦点。
+
+`hover(observe_only=true)` 是 native 只读弹层观察入口，不受严格后台或旧 hover 输入开关限制；必须已有有效绑定快照，回读仍为 readOnly，不启动应用。未知执行模式照常拒绝。输入 hover 在严格后台拒绝且不出现在工具列表中；显式 native 调用只读分支不依赖该列表。dispatcher 不为只读请求切换 input-active 状态。

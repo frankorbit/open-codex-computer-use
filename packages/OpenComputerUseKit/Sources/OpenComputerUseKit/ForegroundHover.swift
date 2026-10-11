@@ -2,7 +2,8 @@ import ApplicationServices
 import Foundation
 
 func foregroundHoverEnabled(environment: [String: String]) -> Bool {
-    environment["OPEN_COMPUTER_USE_FOREGROUND_HOVER"] == "1"
+    (try? ExecutionPolicy.current(environment: environment)) == .compatible
+        && environment["OPEN_COMPUTER_USE_FOREGROUND_HOVER"] == "1"
 }
 
 // MARK: - HoverRequest
@@ -69,6 +70,7 @@ func dispatchForegroundHover<Result>(
     readBack: () throws -> Result
 )
     throws -> Result {
+    try ExecutionPolicy.current().requireForeground("Hover")
     try validateTarget()
     try prepare()
     try validateReceiver()
@@ -98,6 +100,7 @@ extension InputSimulation {
     }
 
     static func movePointerForHover(at point: CGPoint) throws {
+        try ExecutionPolicy.current().requireForeground("Hover pointer movement")
         try requireReleasedMouseButtons()
         guard let source = CGEventSource(stateID: .hidSystemState),
               let event = CGEvent(

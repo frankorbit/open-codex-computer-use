@@ -45,7 +45,8 @@ enum MouseButtonKind: String {
 enum InputSimulation {
     static let maxKeyboardUnicodeChunkLength = 64
 
-    static func prepareAppForGlobalPointerInput(_ app: RunningAppDescriptor) {
+    static func prepareAppForGlobalPointerInput(_ app: RunningAppDescriptor) throws {
+        try ExecutionPolicy.current().requireForeground("Global pointer preparation")
         if raiseAppWindowViaAccessibility(pid: app.pid) {
             Thread.sleep(forTimeInterval: 0.12)
             return
@@ -63,6 +64,7 @@ enum InputSimulation {
     }
 
     static func prepareWindowForForegroundClick(_ app: RunningAppDescriptor, window: AXUIElement) throws {
+        try ExecutionPolicy.current().requireForeground("Global pointer input")
         InputDiagnostics.event("foreground_prepare", ["already_focused": String(isForegroundWindow(app, window: window)), "target_pid": String(app.pid)])
         if isForegroundWindow(app, window: window) { return }
         var owner: pid_t = 0
@@ -87,6 +89,7 @@ enum InputSimulation {
     }
 
     static func clickGlobally(at point: CGPoint, button: MouseButtonKind, clickCount: Int) throws {
+        try ExecutionPolicy.current().requireForeground("Global pointer input")
         guard let source = CGEventSource(stateID: .hidSystemState) else {
             throw ComputerUseError.message("Failed to create HID event source.")
         }
@@ -155,6 +158,7 @@ enum InputSimulation {
     }
 
     static func scrollGlobally(at point: CGPoint, direction: String, pages: Double) throws {
+        try ExecutionPolicy.current().requireForeground("Global pointer input")
         guard let event = CGEvent(scrollWheelEvent2Source: nil, units: .line, wheelCount: 2, wheel1: wheel1(direction: direction, pages: pages), wheel2: wheel2(direction: direction, pages: pages), wheel3: 0) else {
             throw ComputerUseError.message("Failed to create scroll event.")
         }
@@ -185,6 +189,7 @@ enum InputSimulation {
     }
 
     static func dragGlobally(from start: CGPoint, to end: CGPoint) throws {
+        try ExecutionPolicy.current().requireForeground("Global pointer input")
         // A nil (default) event source posted to the HID tap, with per-step deltas and
         // no timestamp override. This is what lets macOS recognize the synthetic
         // sequence as a real window-server drag on current releases.

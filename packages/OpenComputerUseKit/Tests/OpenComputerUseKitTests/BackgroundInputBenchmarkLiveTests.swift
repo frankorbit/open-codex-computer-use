@@ -68,19 +68,28 @@ final class BackgroundInputBenchmarkLiveTests: XCTestCase {
         var clickDispatch: [Double] = [], clickObserved: [Double] = [], keyDispatch: [Double] = [], keyObserved: [Double] = []
         var clickOK = 0, keyOK = 0
         let frontBefore = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        let pointerBefore = try XCTUnwrap(CGEvent(source: nil)?.location)
+        func assertDesktopUnchanged() {
+            XCTAssertEqual(NSWorkspace.shared.frontmostApplication?.processIdentifier, frontBefore)
+            XCTAssertEqual(CGEvent(source: nil)?.location, pointerBefore)
+        }
+        print("BENCH monitoring_start=\(Date().timeIntervalSince1970)")
         for cycle in 1...cycles {
             let c0 = ProcessInfo.processInfo.systemUptime
             try SkyClickDispatcher.click(target: clickTarget, clickCount: 1, spi: spi)
             let cDispatch = ProcessInfo.processInfo.systemUptime - c0
             if let seen = observe("clicks=\(cycle)|") { clickOK += 1; clickObserved.append((cDispatch + seen) * 1000) }
             clickDispatch.append(cDispatch * 1000)
+            assertDesktopUnchanged()
 
             let k0 = ProcessInfo.processInfo.systemUptime
             try SkyKeyboardDispatcher.typeText(target: keyTarget, text: "k\(cycle).", spi: spi)
             let kDispatch = ProcessInfo.processInfo.systemUptime - k0
             if let seen = observe("k\(cycle).|") { keyOK += 1; keyObserved.append((kDispatch + seen) * 1000) }
             keyDispatch.append(kDispatch * 1000)
+            assertDesktopUnchanged()
         }
+        print("BENCH monitoring_end=\(Date().timeIntervalSince1970)")
         let frontAfter = NSWorkspace.shared.frontmostApplication?.processIdentifier
         func pct(_ values: [Double], _ p: Double) -> Double {
             guard !values.isEmpty else { return .nan }

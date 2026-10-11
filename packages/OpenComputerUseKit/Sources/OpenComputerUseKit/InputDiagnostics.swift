@@ -1,3 +1,5 @@
+import AppKit
+import CoreGraphics
 import Foundation
 import OSLog
 
@@ -20,6 +22,13 @@ enum InputDiagnostics {
         record["helper_pid"] = String(ProcessInfo.processInfo.processIdentifier)
         guard let data = try? JSONSerialization.data(withJSONObject: record, options: [.sortedKeys]) else { return nil }
         return String(data: data, encoding: .utf8)
+    }
+
+    static func desktopState(_ phase: String) {
+        var fields = ["phase": phase]
+        fields["foreground_pid"] = NSWorkspace.shared.frontmostApplication.map { String($0.processIdentifier) } ?? "unknown"
+        fields["pointer"] = point(CGEvent(source: nil)?.location)
+        event("desktop_state", fields)
     }
 
     static func point(_ point: CGPoint?) -> String {
@@ -48,6 +57,7 @@ enum InputDiagnostics {
         return $operationID.withValue(id) {
             let start = ProcessInfo.processInfo.systemUptime
             event("\(tool)_started")
+            desktopState("tool_begin")
             let result: ToolCallResult
             do {
                 result = try body()
@@ -56,10 +66,12 @@ enum InputDiagnostics {
             } catch {
                 result = .text((error as? LocalizedError)?.errorDescription ?? String(describing: error), isError: true)
             }
+            desktopState("tool_end")
             var output = result.asDictionary
             let status = output["isError"] as? Bool == true ? "failed" : "returned"
             // returned 只表示函数返回；不能把它当作目标 App 已消费事件的证据。
-            event("\(tool)_finished", ["status": status, "duration_ms": String((ProcessInfo.processInfo.systemUptime - start) * 1000)])
+            let duration = (ProcessInfo.processInfo.systemUptime - start) * 1000
+            event("\(tool)_finished", ["status": status, "duration_ms": String(duration)])
             var metadata = output["_meta"] as? [String: Any] ?? [:]
             metadata["ocuDiagnostic"] = ["id": id, "tool": tool, "status": status]
             output["_meta"] = metadata

@@ -36,6 +36,8 @@ func validateClickMethod(
     hasElementIndex: Bool,
     environment: [String: String]
 ) throws {
+    let policy = try ExecutionPolicy.current(environment: environment)
+    if method == .global { try policy.requireForeground("Global click") }
     if method == .accessibility, !hasElementIndex {
         throw ComputerUseError.message("click_method 'accessibility' requires element_index")
     }
@@ -191,6 +193,7 @@ func inputFallbackDebugEnabled(environment: [String: String]) -> Bool {
 }
 
 func globalPointerFallbacksEnabled(environment: [String: String]) -> Bool {
+    guard (try? ExecutionPolicy.current(environment: environment)) == .compatible else { return false }
     guard let rawValue = environment["OPEN_COMPUTER_USE_ALLOW_GLOBAL_POINTER_FALLBACKS"]?
         .trimmingCharacters(in: .whitespacesAndNewlines)
         .lowercased()
@@ -532,10 +535,18 @@ public final class ComputerUseService {
     }
 
     public func hover(app query: String, arguments: [String: Any]) throws -> ToolCallResult {
-        guard foregroundHoverEnabled(environment: ProcessInfo.processInfo.environment) else {
-            throw ComputerUseError.unsupportedTool("hover")
-        }
+        let policy = try ExecutionPolicy.current()
         let request = try HoverRequest(arguments: arguments)
+        // 只读弹层观察不依赖前台输入授权；真实 hover 必须在读取快照前拒绝。
+        switch request.target {
+        case .observation:
+            break
+        case .element, .coordinates:
+            try policy.requireForeground("Hover")
+            guard foregroundHoverEnabled(environment: ProcessInfo.processInfo.environment) else {
+                throw ComputerUseError.unsupportedTool("hover")
+            }
+        }
         let snapshot = try currentSnapshot(for: query)
         do {
             if case .observation = request.target {
@@ -587,7 +598,10 @@ public final class ComputerUseService {
         let popups = snapshotDependencies.captureHoverPopups(fresh)
         hoverPopupCache.record(popups, snapshot: fresh, now: ProcessInfo.processInfo.systemUptime)
         let main = snapshotResult(for: fresh, style: .actionResult)
-        return ToolCallResult(content: main.content + popups.flatMap(\.content))
+        let popupContent = popups.isEmpty
+            ? [ToolResultContentItem.text(HoverPopupObservation.unavailableNote)]
+            : popups.flatMap(\.content)
+        return ToolCallResult(content: main.content + popupContent)
     }
 
     func discardHoverPopups() { hoverPopupCache.clear() }
@@ -596,6 +610,7 @@ public final class ComputerUseService {
         // 参数失败和授权开关变化也必须消耗旧观察。
         var pending = hoverPopupCache
         hoverPopupCache.clear()
+        try ExecutionPolicy.current().requireForeground("Popup global click")
         let request = try HoverPopupClickRequest(arguments: arguments)
         let lease = try pending.take(request.token)
         guard foregroundHoverEnabled(environment: ProcessInfo.processInfo.environment) else {
@@ -705,6 +720,7 @@ public final class ComputerUseService {
         windowPlacement: WindowPlacement = .keep,
         initialize: Bool = false
     ) throws -> ToolCallResult {
+        _ = try ExecutionPolicy.current()
         guard !initialize || windowPlacement == .keep else {
             throw ComputerUseError.invalidArguments("initialize cannot be combined with window_placement")
         }
@@ -854,7 +870,7 @@ public final class ComputerUseService {
                         button: button,
                         clickCount: clickCount,
                         includeNearbyHitTesting: true,
-                        allowActivationFallback: true
+                        allowActivationFallback: try !ExecutionPolicy.current().isBackground
                     ) else {
                         throw ComputerUseError.message(
                             "click_method 'accessibility' could not click element_index=\(elementIndex)"
@@ -951,6 +967,7 @@ public final class ComputerUseService {
             throw ComputerUseError.stateUnavailable("element \(elementIndex) has no backing accessibility object")
         }
 
+        try ExecutionPolicy.current().requireAXAction(rawAction)
         let result = AXUIElementPerformAction(element, rawAction as CFString)
         guard result == .success else {
             throw ComputerUseError.message("AXUIElementPerformAction failed with \(result.rawValue)")
@@ -1122,6 +1139,7 @@ public final class ComputerUseService {
     }
 
     private func currentSnapshot(for query: String) throws -> AppSnapshot {
+        _ = try ExecutionPolicy.current()
         hoverPopupCache.clear()
         let snapshot = try snapshotCache.snapshot(for: query)
         LiveWindowPreview.publish(snapshot)
@@ -1460,6 +1478,7 @@ public final class ComputerUseService {
     }
 
     private func activateClickTarget(element: AXUIElement, availableActions: [String]) throws -> Bool {
+        try ExecutionPolicy.current().requireForeground("Accessibility activation")
         var activated = false
 
         if try performAction(named: kAXRaiseAction as String, on: element, availableActions: availableActions) {
@@ -2053,12 +2072,14 @@ public final class ComputerUseService {
                 targetDescription: targetDescription,
                 snapshot: snapshot
             )
-            InputSimulation.prepareAppForGlobalPointerInput(snapshot.app)
+            try InputSimulation.prepareAppForGlobalPointerInput(snapshot.app)
             try InputSimulation.scrollGlobally(at: eventPoint, direction: direction, pages: pages)
             return
         }
 
-        try InputSimulation.scrollTargeted(at: eventPoint, direction: direction, pages: pages, pid: snapshot.app.pid)
+        try performAppPostInput(snapshot: snapshot, points: [point], requiresForeground: false) {
+            try InputSimulation.scrollTargeted(at: eventPoint, direction: direction, pages: pages, pid: snapshot.app.pid)
+        }
     }
 
     private func performDragEvent(
@@ -2078,13 +2099,45 @@ public final class ComputerUseService {
                 targetDescription: targetDescription,
                 snapshot: snapshot
             )
-            InputSimulation.prepareAppForGlobalPointerInput(snapshot.app)
+            try InputSimulation.prepareAppForGlobalPointerInput(snapshot.app)
             try InputSimulation.dragGlobally(from: eventStart, to: eventEnd)
         case .appPost:
-            try InputSimulation.dragTargeted(from: eventStart, to: eventEnd, pid: snapshot.app.pid)
+            try performAppPostInput(snapshot: snapshot, points: [start, end]) {
+                try InputSimulation.dragTargeted(from: eventStart, to: eventEnd, pid: snapshot.app.pid)
+            }
         }
 
         return path
+    }
+
+    private func performAppPostInput(
+        snapshot: AppSnapshot, points: [CGPoint], requiresForeground: Bool = true, submit: () throws -> Void
+    ) throws {
+        try dispatchAppPostInput(
+            policy: ExecutionPolicy.current(),
+            validateReceiver: {
+                for point in points {
+                    try self.validateCoordinateSnapshot(at: point, snapshot: snapshot, requireUnoccludedPoint: requiresForeground)
+                }
+                guard let window = snapshot.windowElement else {
+                    throw ComputerUseError.stateUnavailable("Missing app_post receiver window; observe again")
+                }
+                // 滚轮没有 mouse-down；后台可用目标 App 的实时 focused window 作为接收者证据。
+                let focusedMatches: Bool
+                if requiresForeground {
+                    focusedMatches = InputSimulation.isForegroundWindow(snapshot.app, window: window)
+                } else {
+                    focusedMatches = CFEqual(window, try KeyboardReceiver.read(in: snapshot, requireEditable: false))
+                }
+                try validateCoordinateAppPostReceiver(
+                    frontmostPID: NSWorkspace.shared.frontmostApplication?.processIdentifier,
+                    expectedPID: snapshot.app.pid,
+                    focusedWindowMatches: focusedMatches,
+                    requiresForeground: requiresForeground
+                )
+            },
+            submit: submit
+        )
     }
 
     private func performNonAXClickFallback(
@@ -2135,10 +2188,12 @@ public final class ComputerUseService {
         switch method {
         case .appPost:
             debugClickDecision("requested=app_post executed=pid_post target=\(targetDescription)")
-            try InputDiagnostics.input(route: method, point: eventPoint) {
-                try InputSimulation.clickTargeted(
-                    at: eventPoint, button: button, clickCount: clickCount, pid: snapshot.app.pid
-                )
+            try performAppPostInput(snapshot: snapshot, points: [point]) {
+                try InputDiagnostics.input(route: method, point: eventPoint) {
+                    try InputSimulation.clickTargeted(
+                        at: eventPoint, button: button, clickCount: clickCount, pid: snapshot.app.pid
+                    )
+                }
             }
         case .skyClick:
             guard let windowBounds = snapshot.windowBounds, let windowID = snapshot.targetWindowID else {

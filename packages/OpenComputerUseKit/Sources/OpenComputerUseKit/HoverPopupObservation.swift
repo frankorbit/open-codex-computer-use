@@ -12,20 +12,40 @@ struct HoverPopupObservation {
     let bounds: CGRect
     let imageData: Data
     let pixelSize: CGSize
+    var permitsInput = true
 
     var content: [ToolResultContentItem] {
-        let identity = "Popup candidate: windowID=\(windowID), pid=\(pid), popup_token=\"\(token)\"."
+        content(policy: (try? ExecutionPolicy.current()) ?? .background)
+    }
+
+    func content(policy: ExecutionPolicy) -> [ToolResultContentItem] {
+        let canClick = permitsInput && !policy.isBackground
+        let identity = "Popup candidate: windowID=\(windowID), pid=\(pid)."
+            + (canClick ? " popup_token=\"\(token)\"." : " Observation only; no input token.")
         let geometry = "bounds=(\(bounds.minX), \(bounds.minY), \(bounds.width), \(bounds.height)) screen points"
             + " (Quartz top-left, y down); pixelSize=(\(pixelSize.width), \(pixelSize.height))."
             + " Main coordinates unchanged."
-        let usage = "Image-local pixels: click({popup_token:\"\(token)\",x:...,y:...,click_method:\"global\"})"
-            + " / JS app.click([x,y],{popupToken:\"\(token)\",clickMethod:\"global\"})."
-            + " Candidate only, not parent proof; single-use token requires"
-            + " live focus/identity/geometry/receiver checks."
+        let usage: String
+        if canClick {
+            usage = "Image-local pixels: click({popup_token:\"\(token)\",x:...,y:...,click_method:\"global\"})"
+                + " / JS app.click([x,y],{popupToken:\"\(token)\",clickMethod:\"global\"})."
+                + " Candidate only, not parent proof; single-use token requires"
+                + " live focus/identity/geometry/receiver checks."
+        } else {
+            usage = "Image coordinates are local to this observed window, not the main-window screenshot. "
+                + "Same-process geometric candidate only, not proof of popup ownership. "
+                + "This observation does not authorize popup input."
+        }
         var image = ToolResultContentItem.screenshotImage(imageData).dictionary
-        image["_meta"] = ["ocuPopup": ["token": token, "windowID": windowID, "pid": pid]]
+        var metadata: [String: Any] = ["windowID": windowID, "pid": pid, "observationOnly": !canClick]
+        if canClick { metadata["token"] = token }
+        image["_meta"] = ["ocuPopup": metadata]
         return [.text([identity, geometry, usage].joined(separator: "\n")), ToolResultContentItem(dictionary: image)]
     }
+
+    static let unavailableNote = "No verifiable popup candidates were captured. Observation is limited to "
+        + "visible same-process windows near the bound window; inaccessible AX window metadata, hidden/off-screen "
+        + "windows, changing identity/geometry or capture failure may omit candidates. This does not prove no popup exists."
 
     static func capture(for snapshot: AppSnapshot) -> [HoverPopupObservation] {
         guard let rootID = snapshot.targetWindowID, let bounds = snapshot.windowBounds,
@@ -35,6 +55,7 @@ struct HoverPopupObservation {
         let config = ImageCaptureConfig.current
         return capture(
             rootWindowID: rootID, pid: snapshot.app.pid, rootBounds: bounds,
+            requireForeground: false, allowInput: (try? ExecutionPolicy.current()) == .compatible,
             dependencies: Dependencies(
                 readState: { liveState(for: snapshot, root: root) },
                 captureImage: { window in
@@ -74,10 +95,17 @@ struct HoverPopupObservation {
     }
 
     static func capture(
-        rootWindowID: CGWindowID, pid: pid_t, rootBounds: CGRect, dependencies: Dependencies
+        rootWindowID: CGWindowID, pid: pid_t, rootBounds: CGRect,
+        requireForeground: Bool = true, allowInput: Bool = true, dependencies: Dependencies
     ) -> [HoverPopupObservation] {
+        var inputEligible = allowInput
+        func readState() -> State? {
+            let state = dependencies.readState()
+            inputEligible = inputEligible && state?.rootIsForeground == true
+            return state
+        }
         func validRoot(_ state: State) -> Bool {
-            guard state.rootIsForeground,
+            guard (!requireForeground || state.rootIsForeground),
                   state.windows.count(where: { $0.windowID == rootWindowID }) == 1,
                   let root = state.windows.first(where: { $0.windowID == rootWindowID }) else { return false }
             return root.pid == pid && root.bounds == rootBounds && root.isVisible
@@ -93,11 +121,11 @@ struct HoverPopupObservation {
                     && geometricallyRelated(window.bounds, rootBounds)
             }
         }
-        guard let initial = dependencies.readState(), validRoot(initial) else { return [] }
+        guard let initial = readState(), validRoot(initial) else { return [] }
         var captured: [(Window, HoverPopupObservation)] = []
         // 同时限制截图尝试次数，避免大量临时窗口导致无界等待。
         for window in candidates(initial).prefix(4) {
-            guard let before = dependencies.readState(), validRoot(before) else { return [] }
+            guard let before = readState(), validRoot(before) else { return [] }
             guard candidates(before).contains(window) else { continue }
             let data: Data?
             do {
@@ -107,7 +135,7 @@ struct HoverPopupObservation {
                 data = nil
             }
             // 截图失败也复核 root，不能在中途切窗后继续发出其他 token。
-            guard let after = dependencies.readState(), validRoot(after) else { return [] }
+            guard let after = readState(), validRoot(after) else { return [] }
             guard candidates(after).contains(window), let data, let size = pixelSize(of: data) else { continue }
             captured.append((window, HoverPopupObservation(
                 token: UUID().uuidString, windowID: window.windowID, pid: window.pid,
@@ -115,9 +143,13 @@ struct HoverPopupObservation {
             )))
         }
         // 后续截图期间，之前捕获的窗口也可能关闭或迁移。
-        guard let final = dependencies.readState(), validRoot(final) else { return [] }
+        guard let final = readState(), validRoot(final) else { return [] }
         let current = candidates(final)
-        return captured.filter { current.contains($0.0) }.map(\.1)
+        return captured.filter { current.contains($0.0) }.map {
+            var observation = $0.1
+            observation.permitsInput = inputEligible
+            return observation
+        }
     }
 
     static func geometricallyRelated(_ popup: CGRect, _ root: CGRect) -> Bool {
@@ -145,17 +177,26 @@ struct HoverPopupObservation {
     }
 
     private static func liveState(for snapshot: AppSnapshot, root: AXUIElement) -> State? {
-        guard !snapshot.app.runningApplication.isTerminated, !snapshot.app.runningApplication.isHidden,
-              InputSimulation.isForegroundWindow(snapshot.app, window: root),
-              let exclusions = independentWindows(pid: snapshot.app.pid, root: root),
+        guard rootMatchesSnapshot(snapshot, root: root) else { return nil }
+        let foregroundBefore = InputSimulation.isForegroundWindow(snapshot.app, window: root)
+        guard let exclusions = independentWindows(pid: snapshot.app.pid, root: root),
               let info = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]]
         else { return nil }
-        // AX 查询可能阻塞，结束时再检查一次前台身份。
-        guard InputSimulation.isForegroundWindow(snapshot.app, window: root) else { return nil }
+        // AX 查询可能阻塞，结束时复验目标身份；前台状态只决定能否发放输入凭证。
+        guard rootMatchesSnapshot(snapshot, root: root) else { return nil }
         return State(
             windows: info.compactMap(windowInfo),
-            independentWindowIDs: exclusions.ids, independentWindowBounds: exclusions.bounds
+            independentWindowIDs: exclusions.ids, independentWindowBounds: exclusions.bounds,
+            rootIsForeground: foregroundBefore && InputSimulation.isForegroundWindow(snapshot.app, window: root)
         )
+    }
+
+    private static func rootMatchesSnapshot(_ snapshot: AppSnapshot, root: AXUIElement) -> Bool {
+        var owner: pid_t = 0
+        return !snapshot.app.runningApplication.isTerminated && !snapshot.app.runningApplication.isHidden
+            && AXUIElementGetPid(root, &owner) == .success && owner == snapshot.app.pid
+            && snapshot.targetWindowID != nil && SkyLightSPI.shared.windowID(for: root) == snapshot.targetWindowID
+            && snapshot.windowBounds != nil && axFrame(root) == snapshot.windowBounds
     }
 
     static func windowInfo(_ info: [String: Any]) -> Window? {

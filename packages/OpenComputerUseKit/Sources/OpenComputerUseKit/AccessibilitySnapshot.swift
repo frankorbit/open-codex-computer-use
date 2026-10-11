@@ -180,6 +180,7 @@ enum SnapshotBuilder {
         treeLimits: AccessibilityTreeLimits = .defaults,
         recoveryPolicy: SnapshotRecoveryPolicy = .allowActivation
     ) throws -> AppSnapshot {
+        let executionPolicy = try ExecutionPolicy.current()
         if app.name == FixtureBridge.appName, let fixtureState = try FixtureBridge.readState() {
             return buildFixtureSnapshot(app: app, state: fixtureState)
         }
@@ -196,8 +197,9 @@ enum SnapshotBuilder {
         var focusedApplication = copyElement(systemWide, attribute: kAXFocusedApplicationAttribute)
         var focusedWindow = preferredFocusedWindow(appElement: appElement, appPID: app.pid, focusedApplication: focusedApplication, systemWide: systemWide)
         if focusedWindow == nil,
-           recoveryPolicy == .allowActivation,
-           recoverVisibleWindow(for: app, appElement: appElement, preferredWindow: nil) {
+           performWindowRecovery(policy: executionPolicy, requested: recoveryPolicy, recover: {
+               recoverVisibleWindow(for: app, appElement: appElement, preferredWindow: nil)
+           }) {
             focusedApplication = copyElement(systemWide, attribute: kAXFocusedApplicationAttribute)
             focusedWindow = preferredFocusedWindow(appElement: appElement, appPID: app.pid, focusedApplication: focusedApplication, systemWide: systemWide)
         }
@@ -217,8 +219,9 @@ enum SnapshotBuilder {
                 ?? WindowCapture.resolve(for: app.pid, titleHint: windowTitle)
         }
         if windowCapture == nil,
-           recoveryPolicy == .allowActivation,
-           recoverVisibleWindow(for: app, appElement: appElement, preferredWindow: rootWindow) {
+           performWindowRecovery(policy: executionPolicy, requested: recoveryPolicy, recover: {
+               recoverVisibleWindow(for: app, appElement: appElement, preferredWindow: rootWindow)
+           }) {
             focusedApplication = copyElement(systemWide, attribute: kAXFocusedApplicationAttribute)
             if let recoveredWindow = preferredFocusedWindow(appElement: appElement, appPID: app.pid, focusedApplication: focusedApplication, systemWide: systemWide) {
                 rootWindow = recoveredWindow

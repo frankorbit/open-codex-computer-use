@@ -15,6 +15,7 @@ func executeAXAction(
     perform: () -> AXError,
     pauseBetweenAttempts: () -> Void = { Thread.sleep(forTimeInterval: 0.05) }
 ) throws -> AXActionExecutionResult {
+    try ExecutionPolicy.current().requireAXAction(action)
     guard availableActions.contains(where: { $0.caseInsensitiveCompare(action) == .orderedSame }) else {
         return .notAttempted
     }

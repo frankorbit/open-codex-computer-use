@@ -1,13 +1,18 @@
 import Foundation
-import XCTest
 @testable import OpenComputerUseKit
+import XCTest
 
 private final class DiagnosticCollector: @unchecked Sendable {
     // 测试观察器可能跨线程调用，所有访问都由同一把锁保护。
     private let lock = NSLock()
     private var storage: [String] = []
-    func append(_ value: String) { lock.lock(); defer { lock.unlock() }; storage.append(value) }
-    var records: [String] { lock.lock(); defer { lock.unlock() }; return storage }
+    func append(_ value: String) {
+        lock.lock(); defer { lock.unlock() }; storage.append(value)
+    }
+
+    var records: [String] {
+        lock.lock(); defer { lock.unlock() }; return storage
+    }
 }
 
 final class InputDiagnosticsTests: XCTestCase {
@@ -27,9 +32,11 @@ final class InputDiagnosticsTests: XCTestCase {
         XCTAssertEqual(metadata["status"], "failed")
         XCTAssertNotNil(metadata["id"].flatMap(UUID.init(uuidString:)))
         XCTAssertEqual(attempts, 1)
-        XCTAssertEqual(collector.records.count, 4)
+        XCTAssertEqual(collector.records.count, 6)
+        XCTAssertTrue(collector.records.contains { $0.contains("tool_begin") && $0.contains("foreground_pid") })
+        XCTAssertTrue(collector.records.contains { $0.contains("tool_end") && $0.contains("pointer") })
         for record in collector.records {
-            XCTAssertTrue(record.contains(try XCTUnwrap(metadata["id"])))
+            XCTAssertTrue(try record.contains(XCTUnwrap(metadata["id"])))
             XCTAssertFalse(record.contains("private-window-title-and-message"))
         }
         XCTAssertTrue(collector.records.contains { $0.contains("input_failed") && $0.contains("unknown") })
@@ -59,7 +66,7 @@ final class InputDiagnosticsTests: XCTestCase {
             let collector = DiagnosticCollector()
             let request: [String: Any] = [
                 "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-                "params": ["name": name, "arguments": ["text": "private draft", "key": "private key"]]
+                "params": ["name": name, "arguments": ["text": "private draft", "key": "private key"]],
             ]
             let json = try XCTUnwrap(String(data: JSONSerialization.data(withJSONObject: request), encoding: .utf8))
             let response = InputDiagnostics.$observer.withValue({ collector.append($0) }) { StdioMCPServer().handle(line: json) }
