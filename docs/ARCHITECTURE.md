@@ -63,6 +63,8 @@
 
 嵌入式宿主可用 `OPEN_COMPUTER_USE_LIVE_PREVIEW=1` 启用本地 ScreenCaptureKit 单窗口画中画。其目标来自 OCU 实际快照，连续帧不会加入 MCP 响应或模型上下文；输入期间预览穿透鼠标，收起、切窗和会话结束独立清理。`OPEN_COMPUTER_USE_PREVIEW_SESSION` 将恢复/停止通知限定到对应宿主 run。`OPEN_COMPUTER_USE_VISUAL_CURSOR_THEME=today` 可独立启用 Today 蓝色光标和淡光晕，默认保留上游样式。详见[本地预览记录](histories/2026-10/20261010-2155-local-window-preview.md)。
 
+预览根据采集帧比例和当前屏幕 `visibleFrame` 同时约束宽高；切换目标保留长边尺度，尺寸变化、拖拽结束或屏幕变化后校正位置。边缘/四角使用本地缩放命中区和方向光标，内部拖动仅移动预览；输入期间仍穿透鼠标。非激活窗口使用 activeAlways 的 enter/move/exit 事件；悬停期间临时启用本进程 SkyLight `SetsCursorInBackground`，离开、收起或输入穿透前恢复原值，动态符号缺失时记录错误且不激活应用。预览保留黑色底衬，图像填满受比例约束的内容区以避免像素舍入留边，不裁切源窗口，也不改变模型截图。详见[预览 UI 修复记录](histories/2026-10/20261011-1642-preview-ui-layout.md)。
+
 ### 3. Tool Service 层
 
 - `ComputerUseService` 负责把 Computer Use tool 请求映射到本地能力，`ComputerUseToolDispatcher` 则把工具的参数解析与 service 方法分发收敛成 MCP server 和 `open-computer-use call` 共用的一层。macOS dispatcher 在清理 popup、更新输入预览或调用 service 前，按工具定义校验字段白名单、必填项、基本类型、枚举和整数边界；未知字段不再静默丢弃，错误不回显任意输入内容。保留数字元素索引及方法名大小写兼容。独立的 JS 选项校验不能替代此入口校验。

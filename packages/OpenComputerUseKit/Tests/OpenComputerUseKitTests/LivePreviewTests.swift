@@ -11,7 +11,7 @@ import Testing
 
 struct LivePreviewTests {
     @Test @MainActor
-    func framesResizeActualContentAndPreserveManualSize() throws {
+    func `frames resize actual content and preserve manual size`() throws {
         let panel = LivePreviewPanel(
             contentRect: CGRect(x: 0, y: 0, width: 360, height: 240),
             styleMask: [.titled, .closable, .resizable, .fullSizeContentView, .nonactivatingPanel],
@@ -19,35 +19,32 @@ struct LivePreviewTests {
             defer: false
         )
         panel.isReleasedWhenClosed = false
-        panel.minSize = CGSize(width: 240, height: 160)
-        panel.maxSize = CGSize(width: 960, height: 720)
         defer { panel.finish() }
         let view = LivePreviewView(frame: CGRect(x: 0, y: 0, width: 360, height: 240))
         view.autoresizingMask = [.width, .height]
         panel.contentView = view
         let wide = try previewImage(width: 960, height: 450)
         view.showFrame(wide)
-        // AppKit 将窗口尺寸取整到显示像素，容许不超过一个点的舍入差。
-        #expect(abs(view.bounds.width - 360) < 0.01)
-        #expect(abs(view.bounds.height - 168.75) <= 1)
+        #expect(abs(view.bounds.width / view.bounds.height - 960.0 / 450) < 0.02)
+        #expect(try #require(panel.visibleFrame).contains(panel.frame))
 
-        // 模拟用户按比例放大；连续视频帧不能将尺寸恢复成默认值。
-        panel.setContentSize(CGSize(width: 600, height: 281.25))
+        // 连续帧保留用户缩放；换成竖屏时不再继承横屏宽度。
+        panel.setFrame(CGRect(x: panel.frame.minX, y: panel.frame.minY, width: 600, height: 281.25), display: false)
         let manualSize = view.bounds.size
         view.showFrame(wide)
         #expect(view.bounds.size == manualSize)
-        #expect(abs(view.bounds.width - 600) < 0.01)
-        #expect(abs(view.bounds.height - 281.25) <= 1)
+        try view.showFrame(previewImage(width: 300, height: 900))
+        #expect(abs(view.bounds.width / view.bounds.height - 1.0 / 3) < 0.01)
+        #expect(view.bounds.height <= 481)
+        #expect(try #require(panel.visibleFrame).contains(panel.frame))
+        #expect(panel.contentAspectRatio == CGSize(width: 300, height: 900))
+        #expect(panel.isOpaque)
+        #expect(panel.backgroundColor == .black)
 
-        try view.showFrame(previewImage(width: 900, height: 960))
-        #expect(abs(view.bounds.width - 600) < 0.01)
-        #expect(abs(view.bounds.height - 640) < 0.01)
-        #expect(panel.contentAspectRatio == CGSize(width: 900, height: 960))
-
-        // 收起、切窗时清掉旧帧后，新首帧仍需重新同步比例。
         view.image = nil
         view.showFrame(wide)
-        #expect(abs(view.bounds.height - 281.25) <= 1)
+        #expect(abs(view.bounds.width / view.bounds.height - 960.0 / 450) < 0.02)
+        #expect(try #require(panel.visibleFrame).contains(panel.frame))
     }
 
     private func previewImage(width: Int, height: Int) throws -> CGImage {
@@ -64,14 +61,14 @@ struct LivePreviewTests {
     }
 
     @Test
-    func optInOnly() {
+    func `opt in only`() {
         #expect(!livePreviewEnabled(environment: [:]))
         #expect(!livePreviewEnabled(environment: ["OPEN_COMPUTER_USE_LIVE_PREVIEW": "0"]))
         #expect(livePreviewEnabled(environment: ["OPEN_COMPUTER_USE_LIVE_PREVIEW": "1"]))
     }
 
     @Test
-    func targetIdentityAndFiniteGeometryRequired() {
+    func `target identity and finite geometry required`() {
         let bounds = CGRect(x: 100, y: 80, width: 600, height: 400)
         #expect(LivePreviewTarget(pid: 1, windowID: 2, bounds: bounds) != nil)
         #expect(LivePreviewTarget(pid: 0, windowID: 2, bounds: bounds) == nil)
@@ -81,7 +78,7 @@ struct LivePreviewTests {
     }
 
     @Test
-    func lateFramesCannotCrossWindowsOrLifecycle() throws {
+    func `late frames cannot cross windows or lifecycle`() throws {
         let first = try #require(LivePreviewTarget(
             pid: 1,
             windowID: 2,
@@ -116,7 +113,7 @@ struct LivePreviewTests {
     }
 
     @Test
-    func resizeBackToObservedGeometryStillRetiresCapture() throws {
+    func `resize back to observed geometry still retires capture`() throws {
         let target = try #require(LivePreviewTarget(
             pid: 1,
             windowID: 2,
@@ -135,7 +132,7 @@ struct LivePreviewTests {
     }
 
     @Test
-    func cursorConvertsQuartzWindowToAppKitCoordinates() {
+    func `cursor converts quartz window to app kit coordinates`() {
         let window = CGRect(x: -600, y: -200, width: 600, height: 400)
         #expect(livePreviewCursorPoint(tip: CGPoint(x: -300, y: 1000), window: window, primaryHeight: 1000)
             == CGPoint(x: 300, y: 200))

@@ -6,7 +6,6 @@
 //
 
 import AppKit
-import CoreImage
 import OSLog
 import ScreenCaptureKit
 
@@ -71,41 +70,7 @@ final class LiveWindowPreview: NSObject {
         guard panel == nil else {
             return
         }
-        let panel = LivePreviewPanel(
-            contentRect: view.frame,
-            styleMask: [
-                .titled,
-                .closable,
-                .resizable,
-                .fullSizeContentView,
-                .nonactivatingPanel,
-            ],
-            backing: .buffered,
-            defer: false
-        )
-        panel.title = "Today · 画中画"
-        panel.titleVisibility = .hidden
-        panel.titlebarAppearsTransparent = true
-        panel.level = .floating
-        panel.ignoresMouseEvents = inputActive
-        panel.hidesOnDeactivate = false
-        panel.isReleasedWhenClosed = false
-        panel.isMovableByWindowBackground = true
-        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
-        panel.minSize = CGSize(width: 240, height: 160)
-        panel.maxSize = CGSize(width: 960, height: 720)
-        panel.standardWindowButton(.miniaturizeButton)?.isHidden = true
-        panel.standardWindowButton(.zoomButton)?.isHidden = true
-        panel.standardWindowButton(.closeButton)?.setAccessibilityLabel("收起画中画，任务继续")
-        panel.onHide = { [weak self] in self?.hide() }
-        view.autoresizingMask = [.width, .height]
-        view.setAccessibilityElement(true)
-        view.setAccessibilityRole(.image)
-        view.setAccessibilityLabel("Computer Use 本地实时画中画")
-        panel.contentView = view
-        if let screen = NSScreen.main {
-            panel.setFrameOrigin(CGPoint(x: screen.visibleFrame.maxX - 380, y: screen.visibleFrame.minY + 24))
-        }
+        let panel = LivePreviewPanel.make(view: view, inputActive: inputActive) { [weak self] in self?.hide() }
         self.panel = panel
         if let session = ProcessInfo.processInfo.environment["OPEN_COMPUTER_USE_PREVIEW_SESSION"], !session.isEmpty {
             DistributedNotificationCenter.default().addObserver(
@@ -140,6 +105,7 @@ final class LiveWindowPreview: NSObject {
         clear("镜像已结束")
         panel?.finish()
         panel = nil
+        view.setFrameSize(CGSize(width: 360, height: 240))
         if observingReopen {
             DistributedNotificationCenter.default().removeObserver(self)
             observingReopen = false
@@ -153,6 +119,7 @@ final class LiveWindowPreview: NSObject {
         VisualCursorSupport.performOnMain {
             shared.inputActive = active
             // 展示窗口不能挡住前台点击的真实接收者；空闲时仍可拖动或收起。
+            if active { shared.view.cancelInteraction() }
             shared.panel?.ignoresMouseEvents = active
         }
     }
@@ -200,7 +167,7 @@ final class LiveWindowPreview: NSObject {
         else {
             throw PreviewCaptureError.targetUnavailable
         }
-        let config = Self.configuration(for: window.frame.size)
+        let config = LivePreviewCapture.configuration(for: window.frame.size)
         // 只镜像已绑定窗口，即使被其他 App 遮住也不把遮挡者的内容带入预览。
         let events = AsyncStream<PreviewFrameEvent>.makeStream(bufferingPolicy: .bufferingNewest(1))
         let sink = PreviewFrameSink(continuation: events.continuation)
@@ -242,22 +209,6 @@ final class LiveWindowPreview: NSObject {
         }
     }
 
-    private static func configuration(for size: CGSize) -> SCStreamConfiguration {
-        let config = SCStreamConfiguration()
-        let scale = min(2, 960 / max(size.width, size.height))
-        config.width = max(1, Int(size.width * scale))
-        config.height = max(1, Int(size.height * scale))
-        config.minimumFrameInterval = CMTime(value: 1, timescale: 20)
-        config.queueDepth = 3
-        config.showsCursor = false
-        config.capturesAudio = false
-        config.scalesToFit = true
-        config.preservesAspectRatio = false
-        config.ignoreShadowsSingleWindow = true
-        config.ignoreGlobalClipSingleWindow = true
-        return config
-    }
-
     private func notifyUserStopped() {
         guard let session = ProcessInfo.processInfo.environment["OPEN_COMPUTER_USE_PREVIEW_SESSION"] else {
             return
@@ -273,7 +224,7 @@ final class LiveWindowPreview: NSObject {
                 guard let self, state.accepts(generation) else {
                     return
                 }
-                guard !app.isTerminated, let bounds = Self.currentBounds(target) else {
+                guard !app.isTerminated, let bounds = LivePreviewCapture.currentBounds(target) else {
                     select(nil)
                     return
                 }
@@ -291,7 +242,7 @@ final class LiveWindowPreview: NSObject {
     }
 
     private func receive(_ image: CGImage, target: LivePreviewTarget, captureSize: CGSize) {
-        guard let bounds = Self.currentBounds(target) else {
+        guard let bounds = LivePreviewCapture.currentBounds(target) else {
             select(nil)
             return
         }
@@ -314,6 +265,7 @@ final class LiveWindowPreview: NSObject {
     }
 
     private func clear(_ message: String) {
+        view.cancelInteraction()
         view.image = nil
         view.message = message
         view.cursorState = nil
@@ -332,76 +284,10 @@ final class LiveWindowPreview: NSObject {
         view.cursorState = cursorState
         view.needsDisplay = true
     }
-
-    private static func currentBounds(_ target: LivePreviewTarget) -> CGRect? {
-        guard let rows = CGWindowListCopyWindowInfo(.optionIncludingWindow, target.windowID) as? [[String: Any]],
-              let row = rows.first(where: {
-                  ($0[kCGWindowNumber as String] as? UInt32) == target.windowID &&
-                      ($0[kCGWindowOwnerPID as String] as? Int32) == target.pid
-              }), let bounds = row[kCGWindowBounds as String] as? NSDictionary
-        else {
-            return nil
-        }
-        return CGRect(dictionaryRepresentation: bounds)
-    }
 }
 
 // MARK: - PreviewCaptureError
 
 private enum PreviewCaptureError: Error {
     case targetUnavailable
-}
-
-// MARK: - PreviewFrameEvent
-
-private enum PreviewFrameEvent {
-    case frame(CGImage)
-    case unavailable
-    case stopped
-    case stoppedByUser
-}
-
-// MARK: - PreviewFrameSink
-
-/// 像素只保留最新一帧，慢 UI 不积压、不阻塞输入线程。
-private final class PreviewFrameSink: NSObject, SCStreamOutput, SCStreamDelegate, Sendable {
-    private let continuation: AsyncStream<PreviewFrameEvent>.Continuation
-    private let context = CIContext(options: [.cacheIntermediates: false])
-    private let lock = NSLock()
-
-    init(continuation: AsyncStream<PreviewFrameEvent>.Continuation) {
-        self.continuation = continuation
-    }
-
-    func stream(_ stream: SCStream, didStopWithError error: any Error) {
-        lock.lock()
-        defer { lock.unlock() }
-        continuation
-            .yield((error as NSError).code == SCStreamError.Code.userStopped.rawValue ? .stoppedByUser : .stopped)
-        continuation.finish()
-    }
-
-    func stream(_ stream: SCStream, didOutputSampleBuffer sample: CMSampleBuffer, of type: SCStreamOutputType) {
-        guard type == .screen, sample.isValid,
-              let attachments = CMSampleBufferGetSampleAttachmentsArray(
-                  sample,
-                  createIfNecessary: false
-              ) as? [[SCStreamFrameInfo: Any]],
-              let status = attachments.first?[.status] as? Int,
-              status != SCFrameStatus.idle.rawValue
-        else {
-            return
-        }
-        lock.lock()
-        defer { lock.unlock() }
-        guard status == SCFrameStatus.complete.rawValue, let buffer = sample.imageBuffer,
-              let image = context.createCGImage(CIImage(cvPixelBuffer: buffer), from: CGRect(
-                  x: 0, y: 0, width: CVPixelBufferGetWidth(buffer), height: CVPixelBufferGetHeight(buffer)
-              ))
-        else {
-            continuation.yield(.unavailable)
-            return
-        }
-        continuation.yield(.frame(image))
-    }
 }
