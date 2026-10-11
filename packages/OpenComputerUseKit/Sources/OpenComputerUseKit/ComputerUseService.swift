@@ -42,7 +42,7 @@ func validateClickMethod(
 
     if method == .global, !foregroundClicksEnabled(environment: environment) {
         throw ComputerUseError.message(
-            "click_method 'global' requires OPEN_COMPUTER_USE_COORDINATE_CLICK_MODE=foreground or OPEN_COMPUTER_USE_ALLOW_GLOBAL_POINTER_FALLBACKS=1 because it moves the system pointer and changes foreground focus"
+            "click_method 'global' requires OPEN_COMPUTER_USE_ALLOW_FOREGROUND_CLICKS=1, OPEN_COMPUTER_USE_COORDINATE_CLICK_MODE=foreground or OPEN_COMPUTER_USE_ALLOW_GLOBAL_POINTER_FALLBACKS=1 because it moves the system pointer and changes foreground focus"
         )
     }
 }
@@ -485,6 +485,7 @@ public final class ComputerUseService {
     private var actionReadBack: Bool { actionReadBackEnabled(environment: ProcessInfo.processInfo.environment) }
 
     private let coordinateClickBackend: CoordinateClickBackend?
+    private var keyboardInputBackend: KeyboardInputBackend = .live
 
     public init() {
         coordinateClickBackend = nil
@@ -501,6 +502,13 @@ public final class ComputerUseService {
         snapshotCache = AppSnapshotCache(snapshots: snapshots)
         coordinateClickBackend = nil
         self.snapshotDependencies = snapshotDependencies
+    }
+
+    init(snapshots: [String: AppSnapshot], keyboardInputBackend: KeyboardInputBackend) {
+        snapshotCache = AppSnapshotCache(snapshots: snapshots)
+        coordinateClickBackend = nil
+        snapshotDependencies = .live
+        self.keyboardInputBackend = keyboardInputBackend
     }
 
     /// An action's result reads the window back, so the app gets a beat to redraw
@@ -829,7 +837,7 @@ public final class ComputerUseService {
                         button: button,
                         clickCount: clickCount,
                         includeNearbyHitTesting: true,
-                        allowActivationFallback: true
+                        allowActivationFallback: false
                     )) {
                         try performNonAXClickFallback(
                             at: targetPoint,
@@ -1026,25 +1034,12 @@ public final class ComputerUseService {
             return try actionResult(for: query)
         }
 
-        if keyMethod == .skyKey {
-            let target = try skyKeyTarget(for: snapshot)
-            try InputSimulation.typeTextWithSkyLight(text, windowID: target.windowID, pid: target.pid)
-            return snapshotResult(
-                for: try refreshSnapshot(for: query),
-                style: .actionResult
-            )
-        }
-
-        if try typeTextBySettingFocusedValueIfAvailable(text, in: snapshot) {
-            pauseBeforeReadBack(0.1)
-            return try actionResult(for: query)
-        }
-
-        guard try canTypeTextUsingKeyboardFallback(in: snapshot) else {
-            throw ComputerUseError.stateUnavailable("type_text requires a focused editable text element. Click a text entry area first, or use set_value on a settable text element.")
-        }
-
-        try InputSimulation.typeText(text, pid: snapshot.app.pid)
+        let receiver = try keyboardInputBackend.readReceiver(snapshot, true)
+        let target = try skyKeyTarget(for: snapshot)
+        // 点击可在不刷新快照的情况下改变焦点；输入前与合成 key 状态建立后均实时校验。
+        try keyboardInputBackend.typeText(target, text, {
+            try requireSameKeyboardReceiver(receiver, current: keyboardInputBackend.readReceiver(snapshot, true))
+        })
         return try actionResult(for: query)
     }
 
@@ -1057,16 +1052,10 @@ public final class ComputerUseService {
             return try actionResult(for: query)
         }
 
-        if keyMethod == .skyKey {
-            let target = try skyKeyTarget(for: snapshot)
-            try InputSimulation.pressKeyWithSkyLight(key, windowID: target.windowID, pid: target.pid)
-            return snapshotResult(
-                for: try refreshSnapshot(for: query),
-                style: .actionResult
-            )
-        }
-
-        try InputSimulation.pressKey(key, pid: snapshot.app.pid)
+        let target = try skyKeyTarget(for: snapshot)
+        try keyboardInputBackend.pressKey(target, key, {
+            _ = try keyboardInputBackend.readReceiver(snapshot, false)
+        })
         return try actionResult(for: query)
     }
 
@@ -1287,33 +1276,8 @@ public final class ComputerUseService {
                 )
             },
             performMouse: { point, button, clickCount, snapshot in
-                let method = coordinateMouseMethod(
-                    button: button, clickCount: clickCount,
-                    globalEnabled: foregroundClicksEnabled(environment: ProcessInfo.processInfo.environment)
-                )
-                InputDiagnostics.event("mouse_route_selected", ["route": method.rawValue])
-                if method == .appPost {
-                    try self.validateCoordinateSnapshot(at: point, snapshot: snapshot, requireUnoccludedPoint: true)
-                }
-                if method == .appPost {
-                    var focused: CFTypeRef?
-                    let app = AXUIElementCreateApplication(snapshot.app.pid)
-                    let result = AXUIElementCopyAttributeValue(app, kAXFocusedWindowAttribute as CFString, &focused)
-                    let focusedMatches = result == .success && focused.map { focused in
-                        snapshot.windowElement.map { CFEqual(focused, $0) } ?? false
-                    } == true
-                    try validateCoordinateAppPostReceiver(
-                        frontmostPID: NSWorkspace.shared.frontmostApplication?.processIdentifier,
-                        expectedPID: snapshot.app.pid, focusedWindowMatches: focusedMatches
-                    )
-                }
-                guard let bounds = snapshot.windowBounds else {
-                    throw ComputerUseError.stateUnavailable("Coordinate window bounds are unavailable")
-                }
-                try self.performExplicitMouseClick(
-                    method: method, at: point,
-                    windowPoint: CGPoint(x: point.x - bounds.minX, y: point.y - bounds.minY),
-                    button: button, clickCount: clickCount,
+                try self.performNonAXClickFallback(
+                    at: point, button: button, clickCount: clickCount,
                     targetDescription: "auto coordinate", snapshot: snapshot
                 )
             }
@@ -1801,119 +1765,6 @@ public final class ComputerUseService {
         }
     }
 
-    private func typeTextBySettingFocusedValueIfAvailable(_ text: String, in snapshot: AppSnapshot) throws -> Bool {
-        guard let element = snapshot.focusedElement else {
-            return false
-        }
-
-        guard try isSettableForSetValue(element: element, attribute: kAXValueAttribute) else {
-            return false
-        }
-
-        let baseValue = editableBaseValue(for: element)
-        let result = AXUIElementSetAttributeValue(element, kAXValueAttribute as CFString, (baseValue + text) as CFString)
-        switch result {
-        case .success:
-            return true
-        case .failure, .attributeUnsupported, .actionUnsupported, .cannotComplete, .noValue, .invalidUIElement, .illegalArgument:
-            return false
-        default:
-            throw ComputerUseError.message("AXUIElementSetAttributeValue failed with \(result.rawValue)")
-        }
-    }
-
-    private func canTypeTextUsingKeyboardFallback(in snapshot: AppSnapshot) throws -> Bool {
-        guard let element = snapshot.focusedElement else {
-            return false
-        }
-
-        let role = stringValue(of: element, attribute: kAXRoleAttribute)
-        let roleDescription = role.flatMap {
-            stringValue(of: element, attribute: kAXRoleDescriptionAttribute) ?? humanizedRoleDescription(for: $0)
-        }
-        return canUseKeyboardTextFallback(
-            role: role,
-            roleDescription: roleDescription,
-            isValueSettable: try isSettableForSetValue(element: element, attribute: kAXValueAttribute)
-        )
-    }
-
-    private func humanizedRoleDescription(for role: String) -> String {
-        if role == kAXTextFieldRole as String {
-            return "text field"
-        }
-
-        switch role {
-        case "AXTextArea", "AXTextView":
-            return "text entry area"
-        default:
-            return ""
-        }
-    }
-
-    private func editableBaseValue(for element: AXUIElement) -> String {
-        let childTextValues = editableDescendantTextValues(in: element)
-            .filter { !looksLikeEditablePlaceholder($0) }
-        if !childTextValues.isEmpty {
-            return childTextValues.joined()
-        }
-
-        guard let currentValue = stringValue(of: element, attribute: kAXValueAttribute) else {
-            return ""
-        }
-
-        let normalizedValue = normalizeEditablePlaceholderText(currentValue)
-        if normalizedValue.isEmpty || looksLikeEditablePlaceholder(normalizedValue) {
-            return ""
-        }
-
-        for attribute in ["AXPlaceholderValue", "AXPlaceholder"] {
-            guard let placeholder = stringValue(of: element, attribute: attribute) else {
-                continue
-            }
-
-            if normalizedValue == normalizeEditablePlaceholderText(placeholder) {
-                return ""
-            }
-        }
-
-        return currentValue
-    }
-
-    private func editableDescendantTextValues(in element: AXUIElement, depth: Int = 0) -> [String] {
-        guard depth < 4 else {
-            return []
-        }
-
-        var values: [String] = []
-        for child in copyChildren(of: element) {
-            if stringValue(of: child, attribute: kAXRoleAttribute) == kAXStaticTextRole as String,
-               let value = stringValue(of: child, attribute: kAXValueAttribute)
-                    ?? stringValue(of: child, attribute: kAXTitleAttribute)
-            {
-                let normalized = normalizeEditablePlaceholderText(value)
-                if !normalized.isEmpty {
-                    values.append(normalized)
-                }
-            }
-
-            values.append(contentsOf: editableDescendantTextValues(in: child, depth: depth + 1))
-        }
-
-        return values
-    }
-
-    private func looksLikeEditablePlaceholder(_ value: String) -> Bool {
-        let normalized = normalizeEditablePlaceholderText(value)
-        return normalized == "沟通时请保持“公开可接受”"
-    }
-
-    private func normalizeEditablePlaceholderText(_ value: String) -> String {
-        value
-            .replacingOccurrences(of: "\u{200B}", with: "")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
     private func clickFrame(for record: ElementRecord, snapshot: AppSnapshot) -> CGRect? {
         guard let frame = record.localFrame else {
             return nil
@@ -2243,33 +2094,31 @@ public final class ComputerUseService {
         targetDescription: String,
         snapshot: AppSnapshot
     ) throws {
-        let eventPoint = inputEventPoint(fromScreenStatePoint: point)
-
-        if foregroundClicksEnabled(environment: ProcessInfo.processInfo.environment) {
-            debugInputFallback(
-                tool: "click",
-                targetDescription: targetDescription,
-                snapshot: snapshot
-            )
-            try performForegroundClick(at: point, button: button, clickCount: clickCount, snapshot: snapshot)
-            return
-        }
-
-        do {
-            try InputSimulation.clickTargeted(
-                at: eventPoint,
-                button: button,
-                clickCount: clickCount,
-                pid: snapshot.app.pid
-            )
-            return
-        } catch {
-            guard globalPointerFallbacksEnabled(environment: ProcessInfo.processInfo.environment) else {
-                throw ComputerUseError.message(
-                    "click could not be handled through accessibility, and global pointer fallback is disabled. Set OPEN_COMPUTER_USE_ALLOW_GLOBAL_POINTER_FALLBACKS=1 to allow physical-pointer fallback for this process."
-                )
+        let method = coordinateMouseMethod(
+            button: button, clickCount: clickCount,
+            globalEnabled: automaticForegroundClicksEnabled(environment: ProcessInfo.processInfo.environment)
+        )
+        InputDiagnostics.event("mouse_route_selected", ["route": method.rawValue])
+        try validateCoordinateSnapshot(at: point, snapshot: snapshot, identityOnly: method == .global)
+        if method == .appPost {
+            try validateCoordinateSnapshot(at: point, snapshot: snapshot, requireUnoccludedPoint: true)
+            guard let window = snapshot.windowElement else {
+                throw ComputerUseError.stateUnavailable("Snapshot window is unavailable; observe again")
             }
+            try validateCoordinateAppPostReceiver(
+                frontmostPID: NSWorkspace.shared.frontmostApplication?.processIdentifier,
+                expectedPID: snapshot.app.pid,
+                focusedWindowMatches: InputSimulation.isForegroundWindow(snapshot.app, window: window)
+            )
         }
+        guard let bounds = snapshot.windowBounds else {
+            throw ComputerUseError.stateUnavailable("Coordinate window bounds are unavailable")
+        }
+        try performExplicitMouseClick(
+            method: method, at: point,
+            windowPoint: CGPoint(x: point.x - bounds.minX, y: point.y - bounds.minY),
+            button: button, clickCount: clickCount, targetDescription: targetDescription, snapshot: snapshot
+        )
     }
 
     private func performExplicitMouseClick(

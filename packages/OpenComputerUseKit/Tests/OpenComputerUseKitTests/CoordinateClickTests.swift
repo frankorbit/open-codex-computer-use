@@ -238,6 +238,21 @@ final class ForegroundClickTests: XCTestCase {
         XCTAssertFalse(foregroundClicksEnabled(environment: ["OPEN_COMPUTER_USE_COORDINATE_CLICK_MODE": "invalid"]))
     }
 
+    func testExplicitForegroundPermissionDoesNotChangeAutomaticBackgroundRouting() throws {
+        let environment = [
+            "OPEN_COMPUTER_USE_COORDINATE_CLICK_MODE": "background",
+            "OPEN_COMPUTER_USE_ALLOW_FOREGROUND_CLICKS": "1"
+        ]
+        XCTAssertTrue(foregroundClicksEnabled(environment: environment))
+        XCTAssertFalse(automaticForegroundClicksEnabled(environment: environment))
+        XCTAssertFalse(globalPointerFallbacksEnabled(environment: environment))
+        XCTAssertNoThrow(try validateClickMethod(.global, hasElementIndex: false, environment: environment))
+        XCTAssertEqual(coordinateMouseMethod(button: .left, clickCount: 1, globalEnabled: automaticForegroundClicksEnabled(environment: environment)), .skyClick)
+        XCTAssertEqual(coordinateMouseMethod(button: .right, clickCount: 1, globalEnabled: false), .appPost)
+        XCTAssertFalse(automaticForegroundClicksEnabled(environment: ["OPEN_COMPUTER_USE_ALLOW_FOREGROUND_CLICKS": "1"]))
+        XCTAssertTrue(automaticForegroundClicksEnabled(environment: ["OPEN_COMPUTER_USE_COORDINATE_CLICK_MODE": "foreground"]))
+    }
+
     func testForegroundClickValidatesAfterActivationAndSubmitsOnce() throws {
         var phases: [String] = []
         try dispatchForegroundClick(

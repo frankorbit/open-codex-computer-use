@@ -54,6 +54,24 @@ final class InputDiagnosticsTests: XCTestCase {
         XCTAssertFalse(collector.records.joined().contains("UI content"))
     }
 
+    func testKeyboardFailuresIncludeDiagnosticsWithoutLoggingTextOrKeys() throws {
+        for name in ["type_text", "press_key"] {
+            let collector = DiagnosticCollector()
+            let request: [String: Any] = [
+                "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": ["name": name, "arguments": ["text": "private draft", "key": "private key"]]
+            ]
+            let json = try XCTUnwrap(String(data: JSONSerialization.data(withJSONObject: request), encoding: .utf8))
+            let response = InputDiagnostics.$observer.withValue({ collector.append($0) }) { StdioMCPServer().handle(line: json) }
+            let bytes = try XCTUnwrap(response?.data(using: .utf8))
+            let envelope = try XCTUnwrap(JSONSerialization.jsonObject(with: bytes) as? [String: Any])
+            let result = try XCTUnwrap(envelope["result"] as? [String: Any])
+            XCTAssertNotNil((result["_meta"] as? [String: Any])?["ocuDiagnostic"])
+            XCTAssertEqual(result["isError"] as? Bool, true)
+            XCTAssertFalse(collector.records.joined().contains("private"))
+        }
+    }
+
     func testMCPErrorStillIncludesDiagnosticReference() throws {
         let server = StdioMCPServer()
         let request = #"{"jsonrpc":"2.0","id":"sensitive-client-id","method":"tools/call","params":{"name":"click","arguments":{}}}"#

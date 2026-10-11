@@ -210,8 +210,8 @@ enum InputSimulation {
         try postMouseEvent(type: .leftMouseUp, source: nil, point: end, button: .left, clickState: 1, eventNumber: gesture)
     }
 
-    static func typeText(_ text: String, pid: pid_t) throws {
-        for chunk in keyboardUnicodeChunks(for: text) {
+    static func typeText(_ text: String, pid: pid_t, validateReceiver: () throws -> Void = {}) throws {
+        try deliverKeyboardTextChunks(keyboardUnicodeChunks(for: text), validateReceiver: validateReceiver) { chunk in
             var mutableChunk = chunk
             guard let down = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true),
                   let up = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: false) else {
@@ -463,5 +463,27 @@ enum InputSimulation {
         let rawValue = (12.0 * pages).rounded(.toNearestOrAwayFromZero)
         let clamped = min(Double(Int32.max), max(1, rawValue))
         return Int32(clamped)
+    }
+}
+
+// 每个分块发送前重新校验，失败后停止；已经投递的前缀不能自动重放。
+func deliverKeyboardTextChunks(
+    _ chunks: [[UniChar]],
+    validateReceiver: () throws -> Void,
+    submit: ([UniChar]) throws -> Void
+) throws {
+    var attempted = false
+    do {
+        for chunk in chunks {
+            try validateReceiver()
+            attempted = true
+            try submit(chunk)
+        }
+    } catch {
+        guard attempted else { throw error }
+        throw ComputerUseError.message(
+            "Text delivery stopped; some text may already have been entered. "
+                + "Observe the current content before further input; do not replay the full text."
+        )
     }
 }

@@ -317,7 +317,11 @@ enum SnapshotBuilder {
             screenshotData: screenshotData,
             mode: .accessibility,
             treeLines: treeLines,
-            focusedSummary: renderer.focusedSummary,
+            focusedSummary: focusedElementSummary(
+                rendered: renderer.focusedSummary,
+                role: focusedElement.flatMap { stringValue(of: $0, attribute: kAXRoleAttribute) },
+                hasFocusedElement: focusedElement != nil
+            ),
             focusedElement: focusedElement,
             selectedText: selectedText,
             windowElement: rootElement,

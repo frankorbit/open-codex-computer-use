@@ -644,12 +644,12 @@ final class OpenComputerUseKitTests: XCTestCase {
         XCTAssertEqual(windowRelativeFrame(elementFrame: textFieldGlobal, windowBounds: window), textField)
     }
 
-    func testToolDescriptionsMatchOfficialComputerUseSurface() {
+    func testToolDescriptionsPreserveExplicitInitializationContract() {
         let tools = Dictionary(uniqueKeysWithValues: ToolDefinitions.all.map { ($0.name, $0) })
 
         XCTAssertEqual(
             tools["get_app_state"]?.description,
-            "Start an app use session if needed, then get the state of the app's key window and return a screenshot and accessibility tree. This must be called once per assistant turn before interacting with the app. This tool is part of plugin `Computer Use`."
+            "Get the state of the app's key window and return a screenshot and accessibility tree. initialize=true binds the app, launching or reopening it in the background if needed; subsequent observations set initialize=false and never reopen. Observe successfully before interacting with the app. This tool is part of plugin `Computer Use`."
         )
         XCTAssertTrue(tools["press_key"]?.description.contains("xdotool") == true)
         XCTAssertEqual(
@@ -1614,7 +1614,7 @@ final class OpenComputerUseKitTests: XCTestCase {
         ) { error in
             XCTAssertEqual(
                 (error as? ComputerUseError)?.errorDescription,
-                "click_method 'global' requires OPEN_COMPUTER_USE_COORDINATE_CLICK_MODE=foreground or OPEN_COMPUTER_USE_ALLOW_GLOBAL_POINTER_FALLBACKS=1 because it moves the system pointer and changes foreground focus"
+                "click_method 'global' requires OPEN_COMPUTER_USE_ALLOW_FOREGROUND_CLICKS=1, OPEN_COMPUTER_USE_COORDINATE_CLICK_MODE=foreground or OPEN_COMPUTER_USE_ALLOW_GLOBAL_POINTER_FALLBACKS=1 because it moves the system pointer and changes foreground focus"
             )
         }
 
@@ -1786,7 +1786,7 @@ final class OpenComputerUseKitTests: XCTestCase {
 
     func testSkyMenuItemMatchingIsCaseInsensitiveAndSkipsDisabledItems() {
         let selectAll = SkyMenuKeyEquivalent(character: "A", modifiers: 0)
-        XCTAssertTrue(skyMenuItemMatches(cmdChar: "a", cmdModifiers: nil, enabled: nil, equivalent: selectAll))
+        XCTAssertFalse(skyMenuItemMatches(cmdChar: "a", cmdModifiers: nil, enabled: nil, equivalent: selectAll))
         XCTAssertTrue(skyMenuItemMatches(cmdChar: "A", cmdModifiers: 0, enabled: true, equivalent: selectAll))
         XCTAssertFalse(skyMenuItemMatches(cmdChar: "A", cmdModifiers: 1, enabled: true, equivalent: selectAll))
         XCTAssertFalse(skyMenuItemMatches(cmdChar: "A", cmdModifiers: 0, enabled: false, equivalent: selectAll))

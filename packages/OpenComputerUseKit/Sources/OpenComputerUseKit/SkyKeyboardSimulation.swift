@@ -11,7 +11,7 @@ struct SkyKeyboardTarget {
 /// A `cmd`-chord expressed the way AppKit menus advertise their key
 /// equivalents: `AXMenuItemCmdChar` plus the `AXMenuItemCmdModifiers` bitmask
 /// (1 = shift, 2 = option, 4 = control; 8 marks a non-command equivalent).
-struct SkyMenuKeyEquivalent: Equatable, Sendable {
+struct SkyMenuKeyEquivalent: Equatable {
     let character: String
     let modifiers: Int
 }
@@ -45,11 +45,48 @@ func skyMenuKeyEquivalent(for parsed: ParsedKeyPress) -> SkyMenuKeyEquivalent? {
     return SkyMenuKeyEquivalent(character: parsed.displayValue.uppercased(), modifiers: modifiers)
 }
 
-func skyMenuItemMatches(cmdChar: String?, cmdModifiers: Int?, enabled: Bool?, equivalent: SkyMenuKeyEquivalent) -> Bool {
-    guard let cmdChar, enabled != false else {
+func skyMenuItemMatches(
+    cmdChar: String?, cmdModifiers: Int?, enabled: Bool?, equivalent: SkyMenuKeyEquivalent,
+) -> Bool {
+    guard let cmdChar, let cmdModifiers, enabled == true else {
         return false
     }
-    return cmdChar.uppercased() == equivalent.character && (cmdModifiers ?? 0) == equivalent.modifiers
+    return cmdChar.uppercased() == equivalent.character && cmdModifiers == equivalent.modifiers
+}
+
+/// 查找可能跨多次 AX IPC；两种提交路径都必须在查找结束后复验接收者。
+func dispatchSkyMenuKey<Item>(
+    findMenuItem: () throws -> Item?,
+    validateReceiver: () throws -> Void,
+    pressMenuItem: (Item) throws -> Void,
+    postKey: () throws -> Void,
+) throws {
+    try validateReceiver()
+    let item = try findMenuItem()
+    try validateReceiver()
+    if let item {
+        // 一旦尝试 AXPress，任何错误都向上传递，不能换路重放。
+        try pressMenuItem(item)
+    } else {
+        try postKey()
+    }
+}
+
+/// 属性未提供与 AX 查询失败必须区分，后者不能伪装成无菜单并继续投递。
+func readSkyMenuAttribute(
+    _ attribute: String,
+    read: () -> (AXError, CFTypeRef?),
+) throws -> CFTypeRef? {
+    let (result, value) = read()
+    switch result {
+    case .success: return value
+    case .noValue, .attributeUnsupported: return nil
+    default:
+        throw ComputerUseError.stateUnavailable(
+            "Menu query for \(attribute) failed (AXError \(result.rawValue)); "
+                + "no key or menu action was sent. Observe before further input.",
+        )
+    }
 }
 
 /// Owner check for keyboard targets. Unlike `sky_click`, the window does not
@@ -59,7 +96,7 @@ func skyMenuItemMatches(cmdChar: String?, cmdModifiers: Int?, enabled: Bool?, eq
 func skyKeyWindowMatchesTarget(
     windowInfo: [[String: Any]],
     windowID: CGWindowID,
-    pid: pid_t
+    pid: pid_t,
 ) -> Bool {
     windowInfo.contains { info in
         guard
@@ -96,58 +133,70 @@ enum SkyKeyboardDispatcher {
     /// keys with zero delay, so retain a small cross-version safety margin.
     static let keyWindowFallbackSettle = InputTiming.milliseconds(
         "OPEN_COMPUTER_USE_SKY_KEY_SETTLE_MS",
-        default: keyWindowFallbackSettleDefaultMilliseconds
+        default: keyWindowFallbackSettleDefaultMilliseconds,
     )
     static let releaseSettle = InputTiming.milliseconds(
         "OPEN_COMPUTER_USE_SKY_KEY_RELEASE_MS",
-        default: releaseSettleDefaultMilliseconds
+        default: releaseSettleDefaultMilliseconds,
     )
 
     static func typeText(
         target: SkyKeyboardTarget,
         text: String,
-        spi: SkyLightSPI = .shared
+        spi: SkyLightSPI = .shared,
+        validateReceiver: () throws -> Void = {},
     ) throws {
         try deliver(to: target, spi: spi) {
-            try InputSimulation.typeText(text, pid: target.pid)
+            try validateReceiver()
+            InputDiagnostics.event(
+                "keyboard_receiver_validated",
+                ["target_pid": String(target.pid), "window_id": String(target.windowID)],
+            )
+            try InputSimulation.typeText(text, pid: target.pid, validateReceiver: validateReceiver)
         }
     }
 
     static func pressKey(
         target: SkyKeyboardTarget,
         key: String,
-        spi: SkyLightSPI = .shared
+        spi: SkyLightSPI = .shared,
+        validateReceiver: () throws -> Void = {},
     ) throws {
         // Reject bad key specs before touching the target's focus state.
         let parsed = try KeyPressParser.parse(key)
         try deliver(to: target, spi: spi) {
-            if let equivalent = skyMenuKeyEquivalent(for: parsed),
-               let item = menuItem(matching: equivalent, pid: target.pid) {
-                let result = AXUIElementPerformAction(item, kAXPressAction as CFString)
-                guard result == .success else {
-                    throw ComputerUseError.message(
-                        "sky_key could not press the menu item for '\(key)' (AXError \(result.rawValue))"
+            try dispatchSkyMenuKey(
+                findMenuItem: {
+                    guard let equivalent = skyMenuKeyEquivalent(for: parsed) else { return nil as AXUIElement? }
+                    return try menuItem(matching: equivalent, pid: target.pid)
+                },
+                validateReceiver: {
+                    try validateReceiver()
+                    InputDiagnostics.event(
+                        "keyboard_receiver_validated",
+                        ["target_pid": String(target.pid), "window_id": String(target.windowID)],
                     )
-                }
-                Thread.sleep(forTimeInterval: 0.1)
-                return
-            }
-
-            try InputSimulation.pressKey(key, pid: target.pid)
+                },
+                pressMenuItem: { item in
+                    let result = AXUIElementPerformAction(item, kAXPressAction as CFString)
+                    guard result == .success else {
+                        throw ComputerUseError.message(
+                            "sky_key menu action for '\(key)' returned AXError \(result.rawValue); effect is unknown. "
+                                + "Observe before further input; no key fallback was sent.",
+                        )
+                    }
+                    Thread.sleep(forTimeInterval: 0.1)
+                },
+                postKey: { try InputSimulation.pressKey(key, pid: target.pid) },
+            )
         }
     }
 
     private static func deliver(
         to target: SkyKeyboardTarget,
         spi: SkyLightSPI,
-        _ body: () throws -> Void
+        _ body: () throws -> Void,
     ) throws {
-        guard spi.capability.isAvailable else {
-            throw ComputerUseError.message(
-                "key_method 'sky_key' is unavailable: \(spi.capability.unavailableReason)"
-            )
-        }
-
         dispatchLock.lock()
         defer {
             dispatchLock.unlock()
@@ -156,14 +205,22 @@ enum SkyKeyboardDispatcher {
         try validate(target: target)
 
         if NSWorkspace.shared.frontmostApplication?.processIdentifier == target.pid {
+            InputDiagnostics.event("keyboard_route_selected", ["route": "foreground_pid"])
             try body()
             return
         }
 
+        guard spi.capability.isAvailable else {
+            throw ComputerUseError.message(
+                "key_method 'sky_key' is unavailable: \(spi.capability.unavailableReason)",
+            )
+        }
+
+        InputDiagnostics.event("keyboard_route_selected", ["route": "sky_key"])
         let start = TimingLog.now()
         let focusContext = try spi.beginSyntheticTargetFocus(
             targetPID: target.pid,
-            targetWindowID: target.windowID
+            targetWindowID: target.windowID,
         )
         do {
             try spi.makeSyntheticTargetWindowKey(focusContext)
@@ -185,7 +242,7 @@ enum SkyKeyboardDispatcher {
         TimingLog.log("sky_key.total", since: start)
     }
 
-    private static func waitForKeyWindow(_ target: SkyKeyboardTarget, spi: SkyLightSPI) {
+    private static func waitForKeyWindow(_: SkyKeyboardTarget, spi _: SkyLightSPI) {
         if keyWindowFallbackSettle > 0 {
             Thread.sleep(forTimeInterval: keyWindowFallbackSettle)
         }
@@ -196,7 +253,7 @@ enum SkyKeyboardDispatcher {
         // silently dropped. Fail closed instead of unhiding on the user's behalf.
         if NSRunningApplication(processIdentifier: target.pid)?.isHidden == true {
             throw ComputerUseError.stateUnavailable(
-                "sky_key target app is hidden. Unhide it first; sky_key does not change window visibility."
+                "sky_key target app is hidden. Unhide it first; sky_key does not change window visibility.",
             )
         }
 
@@ -204,47 +261,55 @@ enum SkyKeyboardDispatcher {
         // that are off-screen (hidden app, minimized, or on another Space).
         let windowInfo = CGWindowListCopyWindowInfo(
             [.optionAll],
-            kCGNullWindowID
+            kCGNullWindowID,
         ) as? [[String: Any]] ?? []
         guard skyKeyWindowMatchesTarget(
             windowInfo: windowInfo,
             windowID: target.windowID,
-            pid: target.pid
+            pid: target.pid,
         ) else {
             throw ComputerUseError.stateUnavailable(
-                "sky_key target window no longer exists or is no longer owned by the target app. Run get_app_state again."
+                "sky_key target window no longer exists or is no longer owned by the target app. "
+                    + "Run get_app_state again.",
             )
         }
     }
 
     // MARK: - Menu-bar key equivalents
 
-    private static func menuItem(matching equivalent: SkyMenuKeyEquivalent, pid: pid_t) -> AXUIElement? {
+    private static func menuItem(matching equivalent: SkyMenuKeyEquivalent, pid: pid_t) throws -> AXUIElement? {
         let application = AXUIElementCreateApplication(pid)
-        guard let menuBar = copyValue(application, kAXMenuBarAttribute) else {
+        guard let menuBar = try copyValue(application, kAXMenuBarAttribute) else {
             return nil
         }
-        return firstMenuItem(in: menuBar as! AXUIElement, matching: equivalent, depth: 0)
+        guard CFGetTypeID(menuBar) == AXUIElementGetTypeID() else {
+            throw ComputerUseError.stateUnavailable("Invalid menu bar AX type; no key or menu action was sent.")
+        }
+        // 已验证 CF 类型，才转换为 AX 元素。
+        // swiftlint:disable:next force_cast
+        return try firstMenuItem(in: menuBar as! AXUIElement, matching: equivalent, depth: 0)
     }
 
-    private static func firstMenuItem(in element: AXUIElement, matching equivalent: SkyMenuKeyEquivalent, depth: Int) -> AXUIElement? {
+    private static func firstMenuItem(
+        in element: AXUIElement, matching equivalent: SkyMenuKeyEquivalent, depth: Int,
+    ) throws -> AXUIElement? {
         guard depth < 6 else {
             return nil
         }
 
-        for child in copyValue(element, kAXChildrenAttribute) as? [AXUIElement] ?? [] {
-            let role = copyValue(child, kAXRoleAttribute) as? String
+        for child in try copyValue(element, kAXChildrenAttribute) as? [AXUIElement] ?? [] {
+            let role = try copyValue(child, kAXRoleAttribute) as? String
             if role == kAXMenuItemRole as String,
-               skyMenuItemMatches(
+               try skyMenuItemMatches(
                    cmdChar: copyValue(child, "AXMenuItemCmdChar") as? String,
                    cmdModifiers: (copyValue(child, "AXMenuItemCmdModifiers") as? NSNumber)?.intValue,
                    enabled: (copyValue(child, kAXEnabledAttribute) as? NSNumber)?.boolValue,
-                   equivalent: equivalent
+                   equivalent: equivalent,
                ) {
                 return child
             }
 
-            if let nested = firstMenuItem(in: child, matching: equivalent, depth: depth + 1) {
+            if let nested = try firstMenuItem(in: child, matching: equivalent, depth: depth + 1) {
                 return nested
             }
         }
@@ -252,11 +317,11 @@ enum SkyKeyboardDispatcher {
         return nil
     }
 
-    private static func copyValue(_ element: AXUIElement, _ attribute: String) -> CFTypeRef? {
-        var value: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success else {
-            return nil
+    private static func copyValue(_ element: AXUIElement, _ attribute: String) throws -> CFTypeRef? {
+        try readSkyMenuAttribute(attribute) {
+            var value: CFTypeRef?
+            let result = AXUIElementCopyAttributeValue(element, attribute as CFString, &value)
+            return (result, value)
         }
-        return value
     }
 }
