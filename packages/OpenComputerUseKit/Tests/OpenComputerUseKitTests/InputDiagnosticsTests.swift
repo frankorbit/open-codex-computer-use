@@ -16,6 +16,77 @@ private final class DiagnosticCollector: @unchecked Sendable {
 }
 
 final class InputDiagnosticsTests: XCTestCase {
+    func testSingleForegroundFailuresPreserveStageAndSanitizedCauseWithoutReplay() throws {
+        let stages: [ForegroundClickStage] = [.targetValidation, .activation, .receiverValidation, .submission]
+        for (index, failedStage) in stages.enumerated() {
+            let collector = DiagnosticCollector()
+            var calls: [ForegroundClickStage] = []
+            let step: (ForegroundClickStage) throws -> Void = { stage in
+                calls.append(stage)
+                if stage == failedStage { throw ComputerUseError.stateUnavailable("private-window-title-and-message") }
+            }
+            // 通过真实分派器及 MCP 共用的结果封装，验证 Agent 最终收到的错误。
+            let result = InputDiagnostics.$observer.withValue({ collector.append($0) }) {
+                InputDiagnostics.result(tool: "click_foreground_once") {
+                    try dispatchForegroundClick(authorization: .hostSingleClick,
+                        validateTarget: { try step(.targetValidation) }, prepare: { try step(.activation) },
+                        validateReceiver: { try step(.receiverValidation) }, submit: { try step(.submission) })
+                    return .text("unexpected success")
+                }
+            }
+            XCTAssertEqual(calls, Array(stages.prefix(index + 1)))
+            XCTAssertEqual(result["isError"] as? Bool, true)
+            let content = try XCTUnwrap(result["content"] as? [[String: Any]])
+            let text = try XCTUnwrap(content.first?["text"] as? String)
+            XCTAssertTrue(text.contains("stage=\(failedStage.rawValue)"))
+            XCTAssertTrue(text.contains("cause=state_unavailable"))
+            XCTAssertTrue(text.contains("input_may_have_occurred=\(failedStage == .submission)"))
+            XCTAssertTrue(text.contains("activation_may_have_occurred=\(failedStage != .targetValidation)"))
+            XCTAssertTrue(text.contains("do not replay automatically"))
+            XCTAssertEqual(text.contains("No HID mouse input was sent"), failedStage != .submission)
+            XCTAssertFalse(text.contains("private-window-title"))
+            let records = try collector.records.map {
+                try XCTUnwrap(JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: String])
+            }
+            let failures = records.filter { $0["event"] == "foreground_click_failed" }
+            XCTAssertEqual(failures.count, 1)
+            XCTAssertEqual(failures.first?["stage"], failedStage.rawValue)
+            XCTAssertEqual(failures.first?["cause"], "state_unavailable")
+            let metadata = try XCTUnwrap((result["_meta"] as? [String: Any])?["ocuDiagnostic"] as? [String: String])
+            XCTAssertEqual(failures.first?["diagnostic_id"], metadata["id"])
+            XCTAssertEqual(metadata["status"], "failed")
+            XCTAssertFalse(collector.records.joined().contains("private-window-title"))
+        }
+    }
+
+    func testSingleForegroundCauseWhitelistDoesNotExposeAssociatedValues() {
+        let privateText = "private-request-and-file-path"
+        let cases: [(Error, ForegroundClickFailure.Cause)] = [
+            (ComputerUseError.invalidArguments(privateText), .invalidArguments),
+            (ComputerUseError.permissionDenied(privateText), .permissionDenied),
+            (ComputerUseError.stateUnavailable(privateText), .stateUnavailable),
+            (ComputerUseError.appNotFound(privateText), .appNotFound),
+            (ComputerUseError.unsupportedTool(privateText), .unsupportedTool),
+            (ComputerUseError.message(privateText), .operationFailed),
+            (NSError(domain: privateText, code: 42, userInfo: [NSLocalizedDescriptionKey: privateText]), .unexpectedError)
+        ]
+        for (error, expected) in cases {
+            let failure = ForegroundClickFailure(stage: .submission, cause: .init(error))
+            XCTAssertEqual(failure.cause, expected)
+            XCTAssertFalse(failure.localizedDescription.contains(privateText))
+            XCTAssertFalse(failure.diagnosticFields.values.joined().contains(privateText))
+        }
+    }
+
+    func testOrdinaryForegroundStagePreservesOriginalError() {
+        let original = NSError(domain: "fixture", code: 42)
+        XCTAssertThrowsError(try performForegroundClickStage(.activation, authorization: nil) {
+            throw original
+        }) { error in
+            XCTAssertTrue((error as NSError) === original)
+        }
+    }
+
     func testFailureCorrelatesWithoutLoggingErrorContentAndDoesNotReplay() throws {
         let collector = DiagnosticCollector()
         var attempts = 0

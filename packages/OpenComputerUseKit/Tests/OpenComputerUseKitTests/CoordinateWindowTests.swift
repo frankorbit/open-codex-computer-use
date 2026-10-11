@@ -22,7 +22,14 @@ final class CoordinateWindowTests: XCTestCase {
     ) throws {
         try validateCoordinateWindow(windowID: 42, pid: 1234, bounds: bounds, point: location ?? point,
                                      windows: windows, requireUnoccludedPoint: global, spacesForWindow: spaces,
-                                     mouseReceiver: { _ in receiver })
+                                     mouseReceiver: { _ in receiver }, backgroundWindows: { _ in
+                                         // 此 helper 的数组是显式构造的有序测试样本，生产不使用 all 数组推断。
+                                         let target = windows
+                                             .firstIndex {
+                                                 ($0[kCGWindowNumber as String] as? NSNumber)?.uint32Value == 42
+                                             } ?? 0
+                                         return .onScreenAbove(Array(windows.prefix(target)))
+                                     })
     }
 
     func testValidWindowDoesNotNeedAX() throws {

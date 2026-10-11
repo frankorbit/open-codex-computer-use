@@ -2,7 +2,7 @@ import Foundation
 
 /// 校验只读工具定义，不依赖当前是否展示 hover，也不授予任何执行权限。
 func validateNativeToolArguments(name: String, arguments: [String: Any]) throws {
-    guard let definition = (ToolDefinitions.all + [ToolDefinitions.hover]).first(where: { $0.name == name }),
+    guard let definition = (ToolDefinitions.all + [ToolDefinitions.hover, ToolDefinitions.foregroundClickOnce]).first(where: { $0.name == name }),
           let properties = definition.inputSchema["properties"] as? [String: [String: Any]]
     else {
         throw ComputerUseError.unsupportedTool(name)

@@ -18,6 +18,7 @@ Ask the user before taking destructive or externally visible actions such as sen
 """
 
 public final class StdioMCPServer {
+    private let allowsForegroundClickOnce: Bool
     private let dispatcher: ComputerUseToolDispatcher
     private let backgroundStateReset: () -> Void
 
@@ -25,6 +26,7 @@ public final class StdioMCPServer {
         service: ComputerUseService = ComputerUseService(),
         backgroundStateReset: @escaping () -> Void = resetOpenComputerUseBackgroundWindowState
     ) {
+        allowsForegroundClickOnce = service.allowsForegroundClickOnce
         self.dispatcher = ComputerUseToolDispatcher(service: service)
         self.backgroundStateReset = backgroundStateReset
     }
@@ -81,13 +83,13 @@ public final class StdioMCPServer {
                 return try encodeJSONRPCResult(
                     id: id,
                     result: [
-                        "tools": ToolDefinitions.available().map(\.asDictionary),
+                        "tools": (ToolDefinitions.available() + (allowsForegroundClickOnce ? [ToolDefinitions.foregroundClickOnce] : [])).map(\.asDictionary),
                     ]
                 )
             case "tools/call":
                 let name = params["name"] as? String ?? ""
                 let arguments = params["arguments"] as? [String: Any] ?? [:]
-                if ["click", "hover", "type_text", "press_key"].contains(name) {
+                if ["click", "click_foreground_once", "hover", "type_text", "press_key"].contains(name) {
                     return try encodeJSONRPCResult(id: id, result: InputDiagnostics.result(tool: name) {
                         try dispatcher.callTool(name: name, arguments: arguments)
                     })

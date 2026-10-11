@@ -48,9 +48,10 @@ public final class ComputerUseToolDispatcher {
         self.service = service
     }
 
-    func discardHoverPopups() { service.discardHoverPopups() }
+    func discardHoverPopups() { service.discardHoverPopups(); _ = service.takeForegroundObservation() }
 
     public func callTool(name: String, arguments: [String: Any]) throws -> ToolCallResult {
+        let foregroundObservation = service.takeForegroundObservation()
         _ = try ExecutionPolicy.current()
         try validateNativeToolArguments(name: name, arguments: arguments)
         if name != "click" || arguments["popup_token"] == nil { service.discardHoverPopups() }
@@ -74,6 +75,11 @@ public final class ComputerUseToolDispatcher {
                 ),
                 windowPlacement: placement,
                 initialize: try optionalBool("initialize", in: arguments) ?? (placement == .keep)
+            )
+        case "click_foreground_once":
+            return try service.clickForegroundOnce(
+                app: requireString("app", in: arguments), x: requireDouble("x", in: arguments),
+                y: requireDouble("y", in: arguments), observation: foregroundObservation
             )
         case "hover":
             return try service.hover(app: requireString("app", in: arguments), arguments: arguments)

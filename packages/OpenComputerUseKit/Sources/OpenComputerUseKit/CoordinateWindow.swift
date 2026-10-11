@@ -10,22 +10,38 @@ func validateCoordinateWindow(
     requireUnoccludedPoint: Bool,
     identityOnly: Bool = false,
     spacesForWindow: (CGWindowID) -> [UInt64]?,
-    mouseReceiver: (CGPoint) -> CGWindowID? = { _ in nil }
+    mouseReceiver: (CGPoint) -> CGWindowID? = { _ in nil },
+    backgroundWindows: (Bool) throws -> CoordinateWindowObstructions = { _ in
+        throw ComputerUseError.stateUnavailable("Background window order evidence is unavailable; observe again")
+    }
 ) throws {
     var accepted = false
-    defer { InputDiagnostics.event("window_validation", ["accepted": String(accepted), "window_id": String(windowID), "target_pid": String(pid), "require_unoccluded": String(requireUnoccludedPoint)]) }
+    defer { InputDiagnostics.event(
+        "window_validation",
+        [
+            "accepted": String(accepted),
+            "window_id": String(windowID),
+            "target_pid": String(pid),
+            "require_unoccluded": String(requireUnoccludedPoint)
+        ]
+    ) }
     guard point.x.isFinite, point.y.isFinite, bounds.width > 0, bounds.height > 0, bounds.contains(point),
-          let index = windows.firstIndex(where: { ($0[kCGWindowNumber as String] as? NSNumber)?.uint32Value == windowID }) else {
-        throw ComputerUseError.stateUnavailable("Coordinate target is missing or outside its snapshot window; observe again")
+          let index = windows
+          .firstIndex(where: { ($0[kCGWindowNumber as String] as? NSNumber)?.uint32Value == windowID })
+    else {
+        throw ComputerUseError
+            .stateUnavailable("Coordinate target is missing or outside its snapshot window; observe again")
     }
     let current = windows[index]
     guard (current[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value == pid,
           let currentBounds = coordinateWindowBounds(current), currentBounds == bounds,
-          (current[kCGWindowAlpha as String] as? NSNumber)?.doubleValue ?? 1 > 0 else {
-        throw ComputerUseError.stateUnavailable("Coordinate target window changed owner, geometry or visibility; observe again")
+          (current[kCGWindowAlpha as String] as? NSNumber)?.doubleValue ?? 1 > 0
+    else {
+        throw ComputerUseError
+            .stateUnavailable("Coordinate target window changed owner, geometry or visibility; observe again")
     }
 
-    if requireUnoccludedPoint && (current[kCGWindowIsOnscreen as String] as? NSNumber)?.boolValue != true {
+    if requireUnoccludedPoint, (current[kCGWindowIsOnscreen as String] as? NSNumber)?.boolValue != true {
         throw ComputerUseError.stateUnavailable("Global pointer input requires an on-screen target window")
     }
 
@@ -39,17 +55,29 @@ func validateCoordinateWindow(
         // 矩形重叠不代表会接收输入；AppKit 命中测试会排除透明区域和穿透窗口。
         let receiver = mouseReceiver(point)
         InputDiagnostics.event("mouse_receiver", [
-            "window_id": String(windowID), "receiver_window_id": receiver.map { String($0) } ?? "unknown",
+            "window_id": String(windowID), "receiver_window_id": receiver.map { String($0) } ?? "unknown"
         ])
         guard receiver == windowID else {
-            throw ComputerUseError.stateUnavailable("Mouse-down receiver does not match the snapshot window; observe again")
+            throw ComputerUseError
+                .stateUnavailable("Mouse-down receiver does not match the snapshot window; observe again")
         }
         accepted = true
         return
     }
 
     // 后台定向输入不使用前台命中结果；仍检查同 App、同 Space 的上层窗口。
-    for above in windows[..<index] {
+    let evidence = try backgroundWindows((current[kCGWindowIsOnscreen as String] as? NSNumber)?.boolValue == true)
+    try validateCoordinateObstructions(
+        evidence, windowID: windowID, pid: pid, point: point, spacesForWindow: spacesForWindow
+    )
+    accepted = true
+}
+
+private func validateCoordinateObstructions(
+    _ evidence: CoordinateWindowObstructions, windowID: CGWindowID, pid: pid_t, point: CGPoint,
+    spacesForWindow: (CGWindowID) -> [UInt64]?
+) throws {
+    for above in evidence.windows {
         guard let owner = above[kCGWindowOwnerPID as String] as? NSNumber else {
             throw ComputerUseError.stateUnavailable("Cannot verify a window above the coordinate target")
         }
@@ -64,19 +92,26 @@ func validateCoordinateWindow(
         // 不同 Space 可以有完全相同的坐标，不能据此认定互相遮挡。
         guard let aboveID = (above[kCGWindowNumber as String] as? NSNumber)?.uint32Value,
               let targetSpaces = spacesForWindow(windowID), !targetSpaces.isEmpty,
-              let aboveSpaces = spacesForWindow(aboveID), !aboveSpaces.isEmpty else {
+              let aboveSpaces = spacesForWindow(aboveID), !aboveSpaces.isEmpty
+        else {
             throw ComputerUseError.stateUnavailable("Cannot verify Spaces of overlapping windows; observe again")
         }
         if !Set(targetSpaces).isDisjoint(with: aboveSpaces) {
+            guard evidence.hasRelativeOrder else {
+                throw ComputerUseError
+                    .stateUnavailable(
+                        "Cannot verify relative order of overlapping off-screen target windows; observe again"
+                    )
+            }
             InputDiagnostics.event("window_blocked", [
                 "window_id": String(windowID), "blocking_window_id": String(aboveID),
                 "blocking_pid": owner.stringValue, "blocking_bounds": InputDiagnostics.bounds(aboveBounds),
-                "blocking_layer": (above[kCGWindowLayer as String] as? NSNumber)?.stringValue ?? "unknown",
+                "blocking_layer": (above[kCGWindowLayer as String] as? NSNumber)?.stringValue ?? "unknown"
             ])
-            throw ComputerUseError.stateUnavailable("Coordinate target is covered by another receiving window; observe again")
+            throw ComputerUseError
+                .stateUnavailable("Coordinate target is covered by another receiving window; observe again")
         }
     }
-    accepted = true
 }
 
 private func coordinateWindowBounds(_ info: [String: Any]) -> CGRect? {

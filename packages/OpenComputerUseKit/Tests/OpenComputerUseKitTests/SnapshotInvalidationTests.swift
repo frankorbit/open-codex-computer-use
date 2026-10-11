@@ -21,6 +21,38 @@ final class SnapshotInvalidationTests: XCTestCase {
         super.tearDown()
     }
 
+    func testSingleForegroundObservationIsConsumedBeforeArgumentValidation() throws {
+        let harness = SnapshotHarness()
+        harness.addApp(name: "Editor", bundle: "test.editor", pid: 41001)
+        let service = ComputerUseService(snapshotDependencies: harness.dependencies, allowsForegroundClickOnce: true)
+        let dispatcher = ComputerUseToolDispatcher(service: service)
+        _ = try dispatcher.callTool(name: "get_app_state", arguments: ["app": "Editor", "initialize": false])
+        XCTAssertThrowsError(try dispatcher.callTool(name: "click_foreground_once", arguments: [
+            "app": "Editor", "x": 10, "y": 10, "purpose": "open_control", "click_count": 2,
+        ]))
+        XCTAssertNil(service.takeForegroundObservation())
+        _ = try dispatcher.callTool(name: "get_app_state", arguments: ["app": "Editor", "initialize": false])
+        // 普通输入即使参数错误也会消费资格，不会替它自动升级。
+        XCTAssertThrowsError(try dispatcher.callTool(name: "click", arguments: [:]))
+        XCTAssertNil(service.takeForegroundObservation())
+    }
+
+    func testSingleForegroundMissingScreenshotInvalidatesInputSnapshotAndCannotReplay() throws {
+        let harness = SnapshotHarness()
+        harness.addApp(name: "Editor", bundle: "test.editor", pid: 41001)
+        let service = ComputerUseService(snapshotDependencies: harness.dependencies, allowsForegroundClickOnce: true)
+        let dispatcher = ComputerUseToolDispatcher(service: service)
+        _ = try dispatcher.callTool(name: "get_app_state", arguments: ["app": "Editor", "initialize": false])
+        let args: [String: Any] = ["app": "Editor", "x": 10, "y": 10, "purpose": "open_control"]
+        XCTAssertThrowsError(try dispatcher.callTool(name: "click_foreground_once", arguments: args)) { error in
+            XCTAssertTrue(error.localizedDescription.contains("screenshot"))
+        }
+        XCTAssertThrowsError(try dispatcher.callTool(name: "click_foreground_once", arguments: args)) { error in
+            XCTAssertTrue(error.localizedDescription.contains("immediately before"))
+        }
+        assertInputDenied(service, query: "Editor")
+    }
+
     func testInputCacheMissNeverResolvesOrBuilds() {
         let harness = SnapshotHarness()
         let service = ComputerUseService(snapshotDependencies: harness.dependencies)

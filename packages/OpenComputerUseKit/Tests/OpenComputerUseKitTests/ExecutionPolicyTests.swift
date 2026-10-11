@@ -56,6 +56,67 @@ final class ExecutionPolicyTests: XCTestCase {
         XCTAssertEqual(submissions, 1)
     }
 
+    func testSingleClickAuthorizationDoesNotLeakToOrdinaryRoutesOnSuccessOrFailure() throws {
+        for fails in [false, true] {
+            var calls: [String] = []
+            do {
+                try dispatchForegroundClick(authorization: .hostSingleClick,
+                    validateTarget: { calls.append("target") }, prepare: { calls.append("prepare") },
+                    validateReceiver: { calls.append("receiver") }, submit: {
+                        calls.append("submit")
+                        if fails { throw ComputerUseError.message("unknown input") }
+                    })
+                XCTAssertFalse(fails)
+            } catch { XCTAssertTrue(fails) }
+            XCTAssertEqual(calls, ["target", "prepare", "receiver", "submit"])
+            XCTAssertThrowsError(try dispatchForegroundClick(
+                validateTarget: { XCTFail("must remain blocked") }, prepare: {}, validateReceiver: {}, submit: {}))
+            XCTAssertFalse(automaticForegroundClicksEnabled(environment: ProcessInfo.processInfo.environment))
+            XCTAssertFalse(globalPointerFallbacksEnabled(environment: ProcessInfo.processInfo.environment))
+            XCTAssertThrowsError(try ExecutionPolicy.current().requireAXAction("Raise"))
+        }
+    }
+
+    func testSingleClickStillChecksReceiverAfterActivationAndDoesNotSubmitOnMismatch() {
+        var calls: [String] = []
+        XCTAssertThrowsError(try dispatchForegroundClick(authorization: .hostSingleClick,
+            validateTarget: { calls.append("target") }, prepare: { calls.append("prepare") },
+            validateReceiver: { throw ComputerUseError.message("changed window") },
+            submit: { calls.append("submit") }))
+        XCTAssertEqual(calls, ["target", "prepare"])
+    }
+
+    func testSingleClickInvalidPolicyReportsNoActivationOrInput() {
+        setenv(modeKey, "invalid-policy", 1)
+        XCTAssertThrowsError(try dispatchForegroundClick(authorization: .hostSingleClick,
+            validateTarget: { XCTFail("policy failure must stop target lookup") },
+            prepare: { XCTFail("must not activate") }, validateReceiver: {},
+            submit: { XCTFail("must not submit") })) { error in
+            guard let failure = error as? ForegroundClickFailure else {
+                return XCTFail("Expected sanitized foreground failure")
+            }
+            XCTAssertEqual(failure.stage, .policy)
+            XCTAssertEqual(failure.cause, .invalidArguments)
+            XCTAssertFalse(failure.activationMayHaveOccurred)
+            XCTAssertFalse(failure.inputMayHaveOccurred)
+        }
+    }
+
+    func testSingleClickLeaseExpiryIdentityAndDefaultHostDenial() throws {
+        let observation = ForegroundClickObservation(app: "test.editor", observedAt: 100)
+        try observation.validate(app: "test.editor", now: 130)
+        for time in [99.0, 130.01, Double.nan, Double.infinity] {
+            XCTAssertThrowsError(try observation.validate(app: "test.editor", now: time))
+        }
+        XCTAssertThrowsError(try observation.validate(app: "test.other", now: 101))
+        let dispatcher = ComputerUseToolDispatcher()
+        XCTAssertThrowsError(try dispatcher.callTool(name: "click_foreground_once", arguments: [
+            "app": "test.editor", "x": 10, "y": 10, "purpose": "open_control",
+        ])) { error in XCTAssertTrue(error.localizedDescription.contains("Host has not enabled")) }
+        XCTAssertThrowsError(try InputSimulation.clickGlobally(at: .zero, button: .right, clickCount: 1, authorization: .hostSingleClick))
+        XCTAssertThrowsError(try InputSimulation.clickGlobally(at: .zero, button: .left, clickCount: 2, authorization: .hostSingleClick))
+    }
+
     func testStrictModeOverridesAllLegacyForegroundFlags() {
         let environment = ProcessInfo.processInfo.environment
         XCTAssertFalse(foregroundClicksEnabled(environment: environment))

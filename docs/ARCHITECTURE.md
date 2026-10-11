@@ -186,7 +186,9 @@ macOS screenshot 在每轮捕获读取用户 JSON 配置，优先级为 ENV > �
 
 macOS 坐标 `auto` 点击只对实时命中、属于当前窗口且包含点击点的直接控件执行 AXPress（右键为 AXShowMenu）。不会搜索根窗口的可点击后代，也不会选择祖先列表项。窗口有效性独立通过 WindowServer 校验：ID、PID 和几何保持一致，进程未隐藏；同 App、同 Space 的上层窗口不能遮挡点击点。定向输入允许其他 App 覆盖与其他 Space，只有 global 额外要求 on-screen。AX 可选命中查询无值、不支持、未实现、通信失败或元素失效时，可在独立窗口复验后走鼠标；权限关闭、非法参数与未知错误拒绝输入。AX 窗口归属未知只走鼠标，明确不匹配则拒绝。鼠标左键单击/双击与右键单击使用 sky_click，其余沿 app_post；显式开启全局指针时走 global，并要求点击点不被其他 App 遮挡。窗口在查询前和发送输入前各验证一次。AX 或鼠标发出后失败不换路重放，坐标 auto 回读只读，不激活/重开窗口。元素索引有效 AX 点击和显式定向点击保留；前台鼠标点击按下文专用策略执行。hit test 使用窗口局部坐标加窗口原点，截图缩放仅发生一次。
 
-相关回归位于 `CoordinateClickTests.swift`；真实第三方 App 的命中结果和鼠标投递效果仍需 GUI 验收。
+后台坐标校验不从 `.optionAll` 的数组位置推断窗口层级；完整集合只查目标身份。屏上目标通过 `.optionOnScreenAboveWindow + .optionIncludingWindow` 取得上层候选并重验目标；离屏目标通过 `.optionOnScreenOnly` 检查相关屏上候选，再单独刷新目标身份。只有同 App、可见且覆盖落点的候选需要 Space 信息；明确不同 Space 放行，同 Space 但离屏目标层级不可证明则明确失败。该查询在后台分支惰性执行，激活前 identityOnly 与前台实际接收窗口检查不依赖它。app_post 的 AX 查询前后分别取得新证据，不跨阶段缓存。
+
+相关回归位于 `CoordinateClickTests.swift`、`CoordinateWindowTests.swift` 与 `CoordinateWindowQueryTests.swift`；真实第三方 App 的命中结果和鼠标投递效果仍需 GUI 验收。
 
 sky_click 和 app_post 均允许后台定向输入。后台模式的 app_post 在可选 AX focused-window 查询前后验证 PID、窗口 ID、几何与同 App 遮挡；已知 focused window 不匹配则拒绝，AX 信息不可用不单独阻断。它不要求目标占据系统前台，也不主动激活；PID-only 事件仍无法保证应用实际接收，必须观察效果。
 
@@ -245,3 +247,9 @@ click MCP 回执中的 `_meta.ocuDiagnostic` 关联 `ai.today.ocu / input` 的 O
 paste_text 提交后保留新剪贴板内容，不用任意读取者回执触发恢复，也不定时恢复旧数据。仅菜单/键盘动作尝试之前失败才在仍持有所有权时恢复原格式；提交后错误标记未知结果，不重放。此副作用在工具 schema 和 JS 文档明确说明。SkyKeyboardDeliveryBackend 只注入系统查询/SPI 边界，测试直接执行 SkyKeyboardDispatcher.deliver 的真实前后台分支，覆盖自然前台变化、窗口失效与清理。
 
 JS 的 click / pressKey / typeText 在 native 请求前拒绝未知 options 字段、无效按键/次数/方法。组合键使用 `pressKey("super+s")`；`modifiers`、`durationMs` 和拼错的 `button` 不再静默忽略。详见[后台右键验收](histories/2026-10/20261011-1730-background-right-click.md)。
+
+### 宿主单次前台兼容入口
+
+构造 `ComputerUseService(allowsForegroundClickOnce: true)` 可在严格后台会话额外提供 `click_foreground_once`；默认构造不开放。此入口消费最近一次显式观察，只允许同 app、30 秒内截图上的一次左键。它使用既有窗口校验和 HID 点击，通过局部类型化授权允许该次窗口准备及点击，不修改环境变量，也不影响 `auto`、键盘、滚动、拖拽或快照恢复。操作前使缓存输入快照失效，后续必须再次观察；失败或未知结果不自动换路重放。模型需确认这是打开 UI 的非提交入口；`purpose:open_control` 本身不证明控件语义。详见[本轮记录](histories/2026-10/20261011-1835-single-foreground-click.md)。
+
+单次入口的失败诊断区分策略、目标校验、激活、接收窗口校验及 HID 投递阶段。错误结果与原生日志输出稳定阶段码、白名单错误类别，以及 activation/input may-have-occurred 标记；不转发任意错误正文。进入投递阶段后保守报告未知效果，之前的失败明确没有 HID 输入，但激活阶段及之后仍可能改变前台。所有失败均要求重新观察，不自动重放。

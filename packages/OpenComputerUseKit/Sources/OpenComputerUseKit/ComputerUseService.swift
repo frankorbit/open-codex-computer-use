@@ -484,6 +484,8 @@ func shouldPreferContainingWebRowAXClickCandidate(
 }
 
 public final class ComputerUseService {
+    public private(set) var allowsForegroundClickOnce = false
+    private var foregroundObservation: ForegroundClickObservation?
     private var snapshotCache = AppSnapshotCache()
     private var hoverPopupCache = HoverPopupCache()
     private let snapshotDependencies: SnapshotDependencies
@@ -494,7 +496,8 @@ public final class ComputerUseService {
     private let coordinateClickBackend: CoordinateClickBackend?
     private var keyboardInputBackend: KeyboardInputBackend = .live
 
-    public init() {
+    public init(allowsForegroundClickOnce: Bool = false) {
+        self.allowsForegroundClickOnce = allowsForegroundClickOnce
         coordinateClickBackend = nil
         snapshotDependencies = .live
     }
@@ -505,7 +508,8 @@ public final class ComputerUseService {
         snapshotDependencies = .live
     }
 
-    init(snapshots: [String: AppSnapshot] = [:], snapshotDependencies: SnapshotDependencies) {
+    init(snapshots: [String: AppSnapshot] = [:], snapshotDependencies: SnapshotDependencies, allowsForegroundClickOnce: Bool = false) {
+        self.allowsForegroundClickOnce = allowsForegroundClickOnce
         snapshotCache = AppSnapshotCache(snapshots: snapshots)
         coordinateClickBackend = nil
         self.snapshotDependencies = snapshotDependencies
@@ -728,6 +732,7 @@ public final class ComputerUseService {
         guard !initialize || windowPlacement == .keep else {
             throw ComputerUseError.invalidArguments("initialize cannot be combined with window_placement")
         }
+        foregroundObservation = nil
         var observationSucceeded = false
         defer {
             // 放置窗口或最终回读失败时，中间生成的快照也不能继续用于输入。
@@ -739,6 +744,7 @@ public final class ComputerUseService {
         if initialize {
             let snapshot = try initializeAppSnapshot(for: query, textLimit: textLimit, treeLimits: treeLimits)
             snapshotCache.recordObservation(snapshot, for: query)
+            foregroundObservation = ForegroundClickObservation(app: query, observedAt: ProcessInfo.processInfo.systemUptime)
             observationSucceeded = true
             return snapshotResult(for: snapshot, style: .fullState)
         }
@@ -747,6 +753,7 @@ public final class ComputerUseService {
                 try refreshSnapshot(for: query, textLimit: textLimit, treeLimits: treeLimits, explicitObservation: true)
             }
             snapshotCache.recordObservation(snapshot, for: query)
+            foregroundObservation = ForegroundClickObservation(app: query, observedAt: ProcessInfo.processInfo.systemUptime)
             observationSucceeded = true
             return snapshotResult(for: snapshot, style: .fullState)
         }
@@ -770,8 +777,34 @@ public final class ComputerUseService {
 
         let finalSnapshot = try refreshSnapshot(for: query, textLimit: textLimit, treeLimits: treeLimits, explicitObservation: true)
         snapshotCache.recordObservation(finalSnapshot, for: query)
+        foregroundObservation = ForegroundClickObservation(app: query, observedAt: ProcessInfo.processInfo.systemUptime)
         observationSucceeded = true
         return snapshotResult(for: finalSnapshot, style: .fullState)
+    }
+
+    // 在参数校验前消费；错误参数、其他操作或重复请求也不能保留资格。
+    func takeForegroundObservation() -> ForegroundClickObservation? {
+        defer { foregroundObservation = nil }
+        return foregroundObservation
+    }
+
+    func clickForegroundOnce(app query: String, x: Double, y: Double, observation: ForegroundClickObservation?) throws -> ToolCallResult {
+        guard allowsForegroundClickOnce else {
+            throw ComputerUseError.stateUnavailable("Host has not enabled single foreground clicks; no input was sent.")
+        }
+        guard let observation else {
+            throw ComputerUseError.stateUnavailable("Run get_app_state immediately before click_foreground_once; no input was sent.")
+        }
+        try observation.validate(app: query, now: ProcessInfo.processInfo.systemUptime)
+        let snapshot = try currentSnapshot(for: query)
+        // 从此不论激活、投递还是回读失败，都必须重新观察，不能沿旧快照重放。
+        snapshotCache.invalidate(query: query, resolvedApp: snapshot.app)
+        guard snapshot.screenshotData != nil, x.isFinite, y.isFinite, x >= 0, y >= 0 else {
+            throw ComputerUseError.invalidArguments("A screenshot and finite non-negative coordinates are required; no input was sent.")
+        }
+        let point = try screenshotToGlobalPoint(snapshot: snapshot, x: x, y: y)
+        try performForegroundClick(at: point, button: .left, clickCount: 1, snapshot: snapshot, authorization: .hostSingleClick)
+        return .text("Single foreground click submitted; UI effect is unverified. The one-call capability ended. Run get_app_state before further input; normal input remains background-routed.")
     }
 
     public func click(
@@ -1348,7 +1381,12 @@ public final class ComputerUseService {
             windowID: windowID, pid: snapshot.app.pid, bounds: bounds, point: point,
             windows: windows, requireUnoccludedPoint: requireUnoccludedPoint, identityOnly: identityOnly,
             spacesForWindow: { SkyLightSPI.shared.spaces(forWindow: $0) },
-            mouseReceiver: foregroundMouseReceiver
+            mouseReceiver: foregroundMouseReceiver,
+            backgroundWindows: { isOnScreen in
+                try coordinateWindowObstructions(
+                    windowID: windowID, pid: snapshot.app.pid, bounds: bounds, point: point, isOnScreen: isOnScreen
+                )
+            }
         )
     }
 
@@ -2232,15 +2270,17 @@ public final class ComputerUseService {
     }
 
     private func performForegroundClick(
-        at point: CGPoint, button: MouseButtonKind, clickCount: Int, snapshot: AppSnapshot
+        at point: CGPoint, button: MouseButtonKind, clickCount: Int, snapshot: AppSnapshot,
+        authorization: ForegroundClickAuthorization? = nil
     ) throws {
         try dispatchForegroundClick(
+            authorization: authorization,
             validateTarget: { try self.validateCoordinateSnapshot(at: point, snapshot: snapshot, identityOnly: true) },
             prepare: {
                 guard let window = snapshot.windowElement else {
                     throw ComputerUseError.stateUnavailable("Snapshot window is unavailable; observe again")
                 }
-                try InputSimulation.prepareWindowForForegroundClick(snapshot.app, window: window)
+                try InputSimulation.prepareWindowForForegroundClick(snapshot.app, window: window, authorization: authorization)
             },
             validateReceiver: {
                 guard let window = snapshot.windowElement,
@@ -2252,7 +2292,7 @@ public final class ComputerUseService {
             },
             submit: {
                 try InputDiagnostics.input(route: .global, point: point) {
-                    try InputSimulation.clickGlobally(at: inputEventPoint(fromScreenStatePoint: point), button: button, clickCount: clickCount)
+                    try InputSimulation.clickGlobally(at: inputEventPoint(fromScreenStatePoint: point), button: button, clickCount: clickCount, authorization: authorization)
                 }
             }
         )

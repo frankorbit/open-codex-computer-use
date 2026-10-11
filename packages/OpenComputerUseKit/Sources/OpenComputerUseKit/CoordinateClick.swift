@@ -83,17 +83,21 @@ func foregroundClicksEnabled(environment: [String: String]) -> Bool {
 }
 
 func dispatchForegroundClick(
+    authorization: ForegroundClickAuthorization? = nil,
     validateTarget: () throws -> Void,
     prepare: () throws -> Void,
     validateReceiver: () throws -> Void,
     submit: () throws -> Void
 ) throws {
-    try ExecutionPolicy.current().requireForeground("Global click")
-    try validateTarget()
-    try prepare()
-    try validateReceiver()
+    try performForegroundClickStage(.policy, authorization: authorization) {
+        let policy = try ExecutionPolicy.current()
+        if authorization == nil { try policy.requireForeground("Global click") }
+    }
+    try performForegroundClickStage(.targetValidation, authorization: authorization, body: validateTarget)
+    try performForegroundClickStage(.activation, authorization: authorization, body: prepare)
+    try performForegroundClickStage(.receiverValidation, authorization: authorization, body: validateReceiver)
     // 输入一旦提交，无论返回或抛错都不换路重放。
-    try submit()
+    try performForegroundClickStage(.submission, authorization: authorization, body: submit)
 }
 
 // 明确的后台默认与显式全局点击授权分开；旧宿主未指定策略时保留原语义。

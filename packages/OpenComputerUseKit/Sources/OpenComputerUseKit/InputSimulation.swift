@@ -63,8 +63,9 @@ enum InputSimulation {
         return CFEqual(focused, window)
     }
 
-    static func prepareWindowForForegroundClick(_ app: RunningAppDescriptor, window: AXUIElement) throws {
-        try ExecutionPolicy.current().requireForeground("Global pointer input")
+    static func prepareWindowForForegroundClick(_ app: RunningAppDescriptor, window: AXUIElement, authorization: ForegroundClickAuthorization? = nil) throws {
+        let policy = try ExecutionPolicy.current()
+        if authorization == nil { try policy.requireForeground("Global pointer input") }
         InputDiagnostics.event("foreground_prepare", ["already_focused": String(isForegroundWindow(app, window: window)), "target_pid": String(app.pid)])
         if isForegroundWindow(app, window: window) { return }
         var owner: pid_t = 0
@@ -88,8 +89,12 @@ enum InputSimulation {
         throw ComputerUseError.stateUnavailable("Snapshot window did not become foreground; observe again")
     }
 
-    static func clickGlobally(at point: CGPoint, button: MouseButtonKind, clickCount: Int) throws {
-        try ExecutionPolicy.current().requireForeground("Global pointer input")
+    static func clickGlobally(at point: CGPoint, button: MouseButtonKind, clickCount: Int, authorization: ForegroundClickAuthorization? = nil) throws {
+        let policy = try ExecutionPolicy.current()
+        if authorization == nil { try policy.requireForeground("Global pointer input") }
+        if authorization != nil, button != .left || clickCount != 1 {
+            throw ComputerUseError.invalidArguments("Single foreground capability only permits one left click")
+        }
         guard let source = CGEventSource(stateID: .hidSystemState) else {
             throw ComputerUseError.message("Failed to create HID event source.")
         }
