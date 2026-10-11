@@ -41,7 +41,7 @@ public enum ToolDefinitions {
                     "popup_token": stringProperty(description: "One-use token from the immediately preceding hover popup image, valid for 30 seconds. Requires popup-local screenshot x/y and a global left single click; never use main-window coordinates."),
                     "x": numberProperty(description: "X coordinate in screenshot pixel coordinates"),
                     "y": numberProperty(description: "Y coordinate in screenshot pixel coordinates"),
-                    "click_count": integerProperty(description: "Number of clicks. Defaults to 1"),
+                    "click_count": positiveIntegerProperty(description: "Number of clicks. Defaults to 1"),
                     "mouse_button": stringProperty(
                         description: "Mouse button to click. Defaults to left.",
                         enumValues: ["left", "right", "middle"]

@@ -70,7 +70,8 @@ func coordinateHitTestHasElement(_ result: AXError) throws -> Bool {
 
 func coordinateMouseMethod(button: MouseButtonKind, clickCount: Int, globalEnabled: Bool) -> ClickMethod {
     if globalEnabled { return .global }
-    return button == .left && (1...2).contains(clickCount) ? .skyClick : .appPost
+    return (button == .left && (1 ... 2).contains(clickCount)) || (button == .right && clickCount == 1) ? .skyClick :
+        .appPost
 }
 
 // 点击策略与拖拽/滚动的全局指针开关分离，宿主可只启用前台点击。

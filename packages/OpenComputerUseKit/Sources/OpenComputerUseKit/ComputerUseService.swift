@@ -78,12 +78,16 @@ func validateSkyClickArguments(
         return
     }
 
-    guard mouseButton.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == MouseButtonKind.left.rawValue else {
+    let normalized = mouseButton.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    guard normalized == "left" || normalized == "right" else {
         throw ComputerUseError.message(
-            "click_method 'sky_click' only supports mouse_button 'left'"
+            "click_method 'sky_click' supports mouse_button 'left' or 'right'"
         )
     }
 
+    if normalized == "right", clickCount != 1 {
+        throw ComputerUseError.invalidArguments("sky_click right button requires click_count 1")
+    }
     guard (1...2).contains(clickCount) else {
         throw ComputerUseError.message(
             "click_method 'sky_click' supports click_count 1 or 2"
@@ -790,8 +794,13 @@ public final class ComputerUseService {
             clickCount: clickCount
         )
 
+        guard let button = MouseButtonKind(rawValue: mouseButton.trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()), clickCount > 0
+        else {
+            throw ComputerUseError
+                .invalidArguments("click requires mouse_button left/right/middle and a positive click_count")
+        }
         let snapshot = try currentSnapshot(for: query)
-        let button = MouseButtonKind(rawValue: mouseButton.lowercased()) ?? .left
         InputDiagnostics.event("click_target", [
             "requested_method": clickMethod.rawValue, "target_pid": String(snapshot.app.pid),
             "window_id": snapshot.targetWindowID.map(String.init) ?? "unknown",
@@ -2207,7 +2216,7 @@ public final class ComputerUseService {
             try InputDiagnostics.input(route: method, point: eventPoint) {
                 try InputSimulation.clickWithSkyLight(
                     at: eventPoint, windowPoint: windowPoint, windowBounds: windowBounds,
-                    windowID: windowID, clickCount: clickCount, pid: snapshot.app.pid
+                    windowID: windowID, clickCount: clickCount, pid: snapshot.app.pid, button: button
                 )
             }
         case .global:

@@ -187,7 +187,8 @@ final class CoordinateWindowTests: XCTestCase {
     func testMouseRouteSelectedBeforeAnyInput() {
         XCTAssertEqual(coordinateMouseMethod(button: .left, clickCount: 1, globalEnabled: false), .skyClick)
         XCTAssertEqual(coordinateMouseMethod(button: .left, clickCount: 2, globalEnabled: false), .skyClick)
-        XCTAssertEqual(coordinateMouseMethod(button: .right, clickCount: 1, globalEnabled: false), .appPost)
+        XCTAssertEqual(coordinateMouseMethod(button: .right, clickCount: 1, globalEnabled: false), .skyClick)
+        XCTAssertEqual(coordinateMouseMethod(button: .right, clickCount: 2, globalEnabled: false), .appPost)
         XCTAssertEqual(coordinateMouseMethod(button: .middle, clickCount: 1, globalEnabled: false), .appPost)
         XCTAssertEqual(coordinateMouseMethod(button: .left, clickCount: 3, globalEnabled: false), .appPost)
         XCTAssertEqual(coordinateMouseMethod(button: .left, clickCount: 1, globalEnabled: true), .global)

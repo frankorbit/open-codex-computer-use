@@ -335,7 +335,7 @@ final class ForegroundClickTests: XCTestCase {
                                   globalEnabled: automaticForegroundClicksEnabled(environment: environment)),
             .skyClick
         )
-        XCTAssertEqual(coordinateMouseMethod(button: .right, clickCount: 1, globalEnabled: false), .appPost)
+        XCTAssertEqual(coordinateMouseMethod(button: .right, clickCount: 1, globalEnabled: false), .skyClick)
         XCTAssertFalse(
             automaticForegroundClicksEnabled(environment: ["OPEN_COMPUTER_USE_ALLOW_FOREGROUND_CLICKS": "1"])
         )

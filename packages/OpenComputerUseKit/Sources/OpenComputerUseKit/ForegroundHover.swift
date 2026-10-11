@@ -123,7 +123,7 @@ extension ToolDefinitions {
         foregroundHoverEnabled(environment: environment) ? all + [hover] : all
     }
 
-    private static var hover: ToolDefinition {
+    static var hover: ToolDefinition {
         ToolDefinition(
             name: "hover",
             description: "Move the real pointer over an observed element or screenshot point; may foreground it. "

@@ -119,7 +119,8 @@ enum InputSimulation {
         windowBounds: CGRect,
         windowID: CGWindowID,
         clickCount: Int,
-        pid: pid_t
+        pid: pid_t,
+        button: MouseButtonKind = .left
     ) throws {
         try SkyClickDispatcher.click(
             target: SkyClickTarget(
@@ -129,7 +130,8 @@ enum InputSimulation {
                 windowID: windowID,
                 pid: pid
             ),
-            clickCount: clickCount
+            clickCount: clickCount,
+            button: button
         )
     }
 

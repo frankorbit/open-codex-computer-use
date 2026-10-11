@@ -1627,7 +1627,7 @@ final class OpenComputerUseKitTests: XCTestCase {
         )
     }
 
-    func testSkyClickArgumentsRequireLeftButtonAndSingleOrDoubleClick() throws {
+    func testSkyClickArgumentsAllowRightSingleAndLeftSingleOrDouble() throws {
         XCTAssertNoThrow(
             try validateSkyClickArguments(method: .skyClick, mouseButton: " LEFT ", clickCount: 1)
         )
@@ -1639,11 +1639,11 @@ final class OpenComputerUseKitTests: XCTestCase {
         )
 
         XCTAssertThrowsError(
-            try validateSkyClickArguments(method: .skyClick, mouseButton: "right", clickCount: 1)
+            try validateSkyClickArguments(method: .skyClick, mouseButton: "middle", clickCount: 1)
         ) { error in
             XCTAssertEqual(
                 (error as? ComputerUseError)?.errorDescription,
-                "click_method 'sky_click' only supports mouse_button 'left'"
+                "click_method 'sky_click' supports mouse_button 'left' or 'right'"
             )
         }
         XCTAssertThrowsError(
@@ -1654,6 +1654,31 @@ final class OpenComputerUseKitTests: XCTestCase {
                 "click_method 'sky_click' supports click_count 1 or 2"
             )
         }
+    }
+
+    func testRightClickInvalidArgumentsFailBeforeSnapshotLookup() {
+        let service = ComputerUseService()
+        for (button, count) in [("oops", 1), ("right", 0), ("left", -1)] {
+            XCTAssertThrowsError(try service.click(
+                app: "missing-test-app", elementIndex: nil, x: 0, y: 0,
+                clickCount: count, mouseButton: button
+            )) { error in
+                guard case ComputerUseError.invalidArguments = error else {
+                    return XCTFail("Expected argument rejection before any app lookup, got \(error)")
+                }
+            }
+        }
+    }
+
+    func testRightClickRecipeHasNoPrimerOrLeftEvents() throws {
+        XCTAssertNoThrow(try validateSkyClickArguments(method: .skyClick, mouseButton: "right", clickCount: 1))
+        XCTAssertThrowsError(try skyClickEventRecipe(clickCount: 2, button: .right))
+        XCTAssertThrowsError(try skyClickEventRecipe(clickCount: 1, button: .middle))
+        let right = try skyClickEventRecipe(clickCount: 1, button: .right)
+        XCTAssertEqual(right.map(\.pointKind), [.target, .target, .target])
+        XCTAssertEqual(right.map { $0.kind.cgEventType(button: .right) }, [.mouseMoved, .rightMouseDown, .rightMouseUp])
+        XCTAssertEqual(right.map(\.phase), [2, 3, 3])
+        XCTAssertEqual(right.map(\.clickState), [0, 1, 1])
     }
 
     func testSkyClickRecipeIncludesMovePrimerAndTargetPairs() throws {

@@ -207,6 +207,25 @@ final class SkyClickLiveTests: XCTestCase {
             XCTAssertLessThan(hypot(cursorAfter.x - cursorBefore.x, cursorAfter.y - cursorBefore.y), 0.5)
         }
 
+        // 右键必须只产生一次 contextmenu，不能夹带左键 click；之后回归左键双击。
+        let liveTarget = SkyClickTarget(
+            screenPoint: screenPoint, windowPoint: windowPoint, windowBounds: coveredWindow.bounds,
+            windowID: coveredWindow.id, pid: coveredWindow.pid
+        )
+        try SkyClickDispatcher.click(target: liveTarget, clickCount: 1, button: .right, spi: spi)
+        _ = try waitForWindow(pid: readyWindow.pid, nameContaining: "ocu-right-1-left-1")
+        try SkyClickDispatcher.click(target: liveTarget, clickCount: 2, spi: spi)
+        _ = try waitForWindow(pid: readyWindow.pid, nameContaining: "ocu-double-1-right-1-left-3")
+        XCTAssertEqual(NSWorkspace.shared.frontmostApplication?.processIdentifier, frontPIDBefore)
+        if let cursorBefore, let cursorAfter = CGEvent(source: nil)?.location {
+            XCTAssertLessThan(hypot(cursorAfter.x - cursorBefore.x, cursorAfter.y - cursorBefore.y), 0.5)
+        }
+        let afterAll = try waitForFixtureState(pid: cover.processIdentifier,
+                                               failure: "Foreground fixture unavailable") { _ in true }
+        XCTAssertEqual(afterAll.activationLossCount, foregroundStateBefore.activationLossCount)
+        XCTAssertEqual(afterAll.keyWindowLossCount, foregroundStateBefore.keyWindowLossCount)
+        XCTAssertEqual(afterAll.focusedIdentifier, foregroundStateBefore.focusedIdentifier)
+
         let orderedAfter = windows()
         guard
             let coverIndexAfter = orderedAfter.firstIndex(where: { $0.id == coverWindow.id }),
@@ -336,7 +355,16 @@ final class SkyClickLiveTests: XCTestCase {
     </style>
     <button id="target">sky_click probe</button>
     <script>
-      let count = 0;
+      let count = 0, rightCount = 0, doubleCount = 0;
+      document.querySelector('#target').addEventListener('contextmenu', event => {
+        event.preventDefault();
+        rightCount += 1;
+        document.title = `ocu-right-${rightCount}-left-${count}`;
+      });
+      document.querySelector('#target').addEventListener('dblclick', () => {
+        doubleCount += 1;
+        document.title = `ocu-double-${doubleCount}-right-${rightCount}-left-${count}`;
+      });
       document.querySelector('#target').addEventListener('click', () => {
         count += 1;
         document.title = `ocu-sky-click-clicked-${count}`;

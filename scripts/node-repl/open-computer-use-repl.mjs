@@ -220,6 +220,40 @@ export function parseListApps(text) {
   }).filter(app => app.id);
 }
 
+// 输入前拒绝未知选项，避免组合键被静默降级为普通字符。
+function validateInputOptions(options, kind) {
+  if (!options || typeof options !== "object" || Array.isArray(options)) {
+    throw new Error("OCU_INVALID_OPTIONS: input options must be an object");
+  }
+  const allowed = kind === "click" ? ["mouseButton", "clickCount", "clickMethod"] : ["keyMethod"];
+  const keys = Reflect.ownKeys(options);
+  for (const key in options) if (!keys.includes(key)) keys.push(key);
+  if (keys.some(key => !allowed.includes(key))) {
+    throw new Error(`OCU_UNSUPPORTED_OPTION: ${kind} supports only ${allowed.join(", ")}. ` +
+      'modifiers, key and durationMs options are not supported. For keyboard shortcuts use pressKey("super+s") or pressKey("super+shift+s"). No input was sent.');
+  }
+  if (kind === "click") {
+    if (options.mouseButton !== undefined && !["left", "right", "middle"].includes(options.mouseButton)) {
+      throw new Error("OCU_INVALID_OPTIONS: mouseButton must be left, right or middle");
+    }
+    if (options.clickCount !== undefined && (!Number.isSafeInteger(options.clickCount) || options.clickCount < 1)) {
+      throw new Error("OCU_INVALID_OPTIONS: clickCount must be a positive safe integer");
+    }
+    if (options.clickMethod !== undefined && (typeof options.clickMethod !== "string" ||
+        !["auto", "accessibility", "app_post", "sky_click", "global"].includes(options.clickMethod.trim().toLowerCase()))) {
+      throw new Error("OCU_INVALID_OPTIONS: unknown clickMethod");
+    }
+    if (options.clickMethod?.trim().toLowerCase() === "sky_click" &&
+        !((options.mouseButton ?? "left") === "left" && (options.clickCount ?? 1) <= 2 ||
+          options.mouseButton === "right" && (options.clickCount ?? 1) === 1)) {
+      throw new Error("OCU_INVALID_OPTIONS: sky_click supports left single/double or right single click");
+    }
+  } else if (options.keyMethod !== undefined && (typeof options.keyMethod !== "string" ||
+      !["auto", "sky_key"].includes(options.keyMethod.trim().toLowerCase()))) {
+    throw new Error("OCU_INVALID_OPTIONS: keyMethod must be auto or sky_key");
+  }
+}
+
 function optionsToSnapshotArgs(options = {}) {
   const args = {};
   if (options.textLimit !== undefined) args.text_limit = options.textLimit;
@@ -230,6 +264,7 @@ function optionsToSnapshotArgs(options = {}) {
 }
 
 function optionsToClickArgs(options = {}) {
+  validateInputOptions(options, "click");
   const args = {};
   if (options.mouseButton !== undefined) args.mouse_button = options.mouseButton;
   if (options.clickCount !== undefined) args.click_count = options.clickCount;
@@ -238,6 +273,7 @@ function optionsToClickArgs(options = {}) {
 }
 
 function optionsToKeyArgs(options = {}) {
+  validateInputOptions(options, "keyboard");
   const args = {};
   if (options.keyMethod !== undefined) args.key_method = options.keyMethod;
   return args;
@@ -292,7 +328,7 @@ export function createCuaApi(native, activeOutput) {
         await call("click", { app, ...targetArgs, ...optionsToClickArgs(options) });
       },
       async drag(from, to) { await call("drag", { app, from_x: from[0], from_y: from[1], to_x: to[0], to_y: to[1] }); },
-      async pressKey(key, options = {}) { await call("press_key", { app, key, ...optionsToKeyArgs(options) }); },
+      async pressKey(key, options = {}) { if (typeof key !== "string" || !key.trim()) throw new Error("pressKey requires a non-empty key chord string"); await call("press_key", { app, key, ...optionsToKeyArgs(options) }); },
       async scroll(target, direction, pages = 1) {
         if (Array.isArray(target)) throw new Error("coordinate scroll is not supported by this Open Computer Use runtime");
         await call("scroll", { app, element_index: target, direction, pages });

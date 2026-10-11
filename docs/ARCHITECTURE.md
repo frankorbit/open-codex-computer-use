@@ -65,7 +65,7 @@
 
 ### 3. Tool Service 层
 
-- `ComputerUseService` 负责把 Computer Use tool 请求映射到本地能力，`ComputerUseToolDispatcher` 则把工具的参数解析与 service 方法分发收敛成 MCP server 和 `open-computer-use call` 共用的一层。
+- `ComputerUseService` 负责把 Computer Use tool 请求映射到本地能力，`ComputerUseToolDispatcher` 则把工具的参数解析与 service 方法分发收敛成 MCP server 和 `open-computer-use call` 共用的一层。macOS dispatcher 在清理 popup、更新输入预览或调用 service 前，按工具定义校验字段白名单、必填项、基本类型、枚举和整数边界；未知字段不再静默丢弃，错误不回显任意输入内容。保留数字元素索引及方法名大小写兼容。独立的 JS 选项校验不能替代此入口校验。
 - Codex plugin 的 `.mcp.json` 默认不把 native tools 直接暴露给模型，而是启动 `scripts/node-repl/open-computer-use-repl.mjs`。adapter 以 child MCP client 连接同一个 native runtime，并只对外列出 `js` / `js_reset`；JavaScript 通过异步 app-bound API（`cua.getApp(...)`、`app.click(...)`、`app.getAXState()` 等）调用 native tools。
 - REPL 使用 Node.js 自带的 evaluator，因此保留 top-level `await` 和跨调用 lexical bindings；真正执行代码的 kernel 位于 Worker 中，超时会终止 Worker 并重建干净 session，避免 `while (true)` 挂死 MCP transport。
 - npm launcher 还直接提供 `ocu js` 和 `ocu repl`：前者为一次性 Worker/native MCP session，后者在当前终端内保留同一个 session 和 binding；两者退出后都会关闭 Worker 与 native MCP child。`ocu capabilities [--json]` 在不启动 native MCP 的情况下报告 Node、adapter、kernel 和当前平台 native artifact 是否齐全。help 始终显示 code-first 命令并标记 availability，不按环境动态隐藏接口。
@@ -89,8 +89,8 @@
   - `perform_secondary_action` 只执行目标元素已经暴露出来的 AX action；Safari 这类 AppKit custom action descriptor（例如 `Name:close tab ...`）会显示为短名称并准确映射回过滤后的原始 AX action，避免 raw/rendered action 错配；短名称与其他显示名称或任一其他原始 AX action（包括被过滤的动作，忽略大小写）冲突时保留完整 descriptor，保证输出 selector 不被原始动作精确匹配抢占；无效或歧义 action 返回官方风格的 `... is not a valid secondary action for ...`，fixture 的 `Raise` 路径也不再为了测试去准备全局物理指针输入
   - `set_value` 会先用 `AXUIElementIsAttributeSettable(kAXValueAttribute)` 判断目标是否真的是可设置值元素，只有 settable 时才调用 `AXUIElementSetAttributeValue`；不可设置时返回官方风格的 non-settable 错误，不退到键盘输入、剪贴板或未公开的文本替换接口
   - `click.click_method` 是开源版的可选扩展，支持 `auto`（默认）、`accessibility`、`app_post`、`sky_click` 和 `global`。坐标 auto 的 fork 路由见下文；元素索引的 AX 选择不变，鼠标兜底与坐标共用自动路由；显式模式不会静默 fallback 到其他实现。`accessibility` 只接受 `element_index`；其余 mouse 路径可以使用 `element_index` 的计算落点或原始 `x/y` 坐标。
-  - element-targeted `click` 的 `auto` 左键路径会先试原生列表的 `AXSelectedChildren` 选择，再试 `AXPress` / `AXConfirm` / `AXOpen` 这类真正语义化的激活动作；如果目标本身不可点，还会继续尝试其子孙 AX 元素（例如 Finder sidebar row 下面暴露 `AXOpen` 的 cell）和命中点附近的 AX hit-test 结果，最后进入现有 non-AX 分支：默认左键单击/双击使用 `sky_click`，其他按键使用经独立窗口校验的 `app_post`；只有明确的自动前台策略才使用全局 HID 事件。`AXRaise` / `kAXMainAttribute` / `kAXFocusedAttribute` 这类 activation-only fallback 只在显式 accessibility 模式允许窗口级元素使用，auto 不走此分支，避免普通静态文本或容器把“获得焦点”误报成“点击已处理”；`click_count > 1` 也会优先重复可用的 AX action。
-  - 显式 `click_method=accessibility` 只执行上述 AX 语义动作；显式 `click_method=app_post` 绕过 AX 候选和后代扫描，直接通过 `CGEvent.postToPid` 向目标进程发送 `mouseMoved` / down / up；显式 `click_method=sky_click` 只在 macOS 接受左键单击/双击，它验证当前 snapshot 的 `CGWindowID` 仍为同一 PID 所有，仅通过 `SLPSPostEventRecordTo` 让目标应用短暂进入 synthetic-active 状态，绝不向真实前台应用发送 defocus record，再按 Chromium-compatible recipe 发送 target move、`(-1,-1)` primer 和真实 down/up。每个鼠标事件同时经动态解析的 `SLEventPostToPid` 与公开 `postToPid` 投递，并带 window-local location、PID/window 和 click-group 字段；renderer settle 后只撤销目标的 synthetic-active 状态。`sky_click` 的 action-result snapshot 刷新也禁止 activate / `AXRaise` 恢复，目标状态瞬时不可读时直接失败。fork 的坐标 auto 左键单击/双击也使用此路径；任一步失败不 fallback。显式 `click_method=global` 同样绕过 AX，但通过 `.cghidEventTap` 发送系统级指针事件。`global` 还必须设置 `OPEN_COMPUTER_USE_ALLOW_FOREGROUND_CLICKS=1`、点击前台策略或全局指针授权，否则在移动 visual cursor 或发送输入前拒绝请求。
+  - element-targeted `click` 的 `auto` 左键路径会先试原生列表的 `AXSelectedChildren` 选择，再试 `AXPress` / `AXConfirm` / `AXOpen` 这类真正语义化的激活动作；如果目标本身不可点，还会继续尝试其子孙 AX 元素（例如 Finder sidebar row 下面暴露 `AXOpen` 的 cell）和命中点附近的 AX hit-test 结果，最后进入现有 non-AX 分支：默认左键单击/双击和右键单击使用 `sky_click`，其他按键使用经独立窗口校验的 `app_post`；只有明确的自动前台策略才使用全局 HID 事件。`AXRaise` / `kAXMainAttribute` / `kAXFocusedAttribute` 这类 activation-only fallback 只在显式 accessibility 模式允许窗口级元素使用，auto 不走此分支，避免普通静态文本或容器把“获得焦点”误报成“点击已处理”；`click_count > 1` 也会优先重复可用的 AX action。
+  - 显式 `click_method=accessibility` 只执行上述 AX 语义动作；显式 `click_method=app_post` 绕过 AX 候选和后代扫描，直接通过 `CGEvent.postToPid` 向目标进程发送 `mouseMoved` / down / up；显式 `click_method=sky_click` 在 macOS 接受左键单击/双击和右键单击，它验证当前 snapshot 的 `CGWindowID` 仍为同一 PID 所有，仅通过 `SLPSPostEventRecordTo` 让目标应用短暂进入 synthetic-active 状态，绝不向真实前台应用发送 defocus record，再按 Chromium-compatible recipe 发送 target move、`(-1,-1)` primer 和真实 down/up。左键鼠标事件同时经动态解析的 `SLEventPostToPid` 与公开 `postToPid` 投递，并带 window-local location、PID/window 和 click-group 字段；renderer settle 后只撤销目标的 synthetic-active 状态。右键仅发送目标处 move/down/up，不发送左键 primer，并仅走 `SLEventPostToPid`，避免 Chromium 的双通道重复 contextmenu。`sky_click` 的 action-result snapshot 刷新也禁止 activate / `AXRaise` 恢复，目标状态瞬时不可读时直接失败。fork 的坐标 auto 左键单击/双击和右键单击也使用此路径；任一步失败不 fallback。显式 `click_method=global` 同样绕过 AX，但通过 `.cghidEventTap` 发送系统级指针事件。`global` 还必须设置 `OPEN_COMPUTER_USE_ALLOW_FOREGROUND_CLICKS=1`、点击前台策略或全局指针授权，否则在移动 visual cursor 或发送输入前拒绝请求。
   - `get_app_state` 解析目标窗口时先看 on-screen 窗口，再退到所有窗口，所以位于其他 Space 的窗口不会触发 activate / raise 恢复；拍到未被遮挡的窗口后会关闭它的 WindowServer occlusion 通知（`WindowOcclusionKeepAlive`），之后被遮挡或切换 Space 时 Chromium / Electron / WebKit 仍保留页面与 `AXWebArea`。keep-alive 保存 SPI 返回的原始开关状态，并在 turn-ended、MCP/app-agent connection 关闭、server 正常关闭或进程退出时恢复；恢复失败的记录保留到后续重试。因为 snapshot 会维护该状态，macOS `get_app_state` 不声明 `readOnlyHint`。Chromium 系 app 的 web AX tree 是懒加载的，窗口可见时最多重走 3 秒，被遮挡时在 tree 末尾追加说明。`sky_click` 不再要求窗口 on-screen。详见 `docs/references/macos-window-visibility-and-spaces.md`。
   - 窗口截图主路径是 WindowServer 的 `SLSHWCaptureWindowList`（任何 Space、被遮挡均可，15–45 ms），ScreenCaptureKit 为 fallback；AX root window 通过 `_AXUIElementGetWindow` 直接绑定 `CGWindowID`。输入 recipe 的固定间隔都是环境变量可调的校准旋钮，默认值来自基准测试（见 `docs/references/macos-window-visibility-and-spaces.md`）。
   - `get_app_state.window_placement` 是开源版的可选扩展：`keep`（默认）、`agent_display`、`restore`。`agent_display` 通过 `AgentDisplay` + `packages/OpenComputerUseVirtualDisplayShim` 创建 agent 专用 virtual display，用 AX 位置把目标窗口的 frame 移过去（不激活、不抬升），让已被遮挡或在其他 Space 的窗口对其 app 真正可见；`restore` 按 app PID 恢复当前 runtime 停放的全部窗口，session cleanup 或进程退出也会恢复全部窗口并销毁显示器。恢复失败时保留原位置记录和 virtual display，避免把未恢复窗口误记为成功并允许后续重试；已关闭的窗口则直接清除记录。shim 捕获私有 KVC/selector 的 Objective-C exception，并把不兼容系统收敛为创建失败。Windows / Linux 对非 `keep` 值返回 unsupported。
@@ -182,7 +182,7 @@ macOS screenshot 在每轮捕获读取用户 JSON 配置，优先级为 ENV > �
 
 ## Fork 的坐标点击修正
 
-macOS 坐标 `auto` 点击只对实时命中、属于当前窗口且包含点击点的直接控件执行 AXPress（右键为 AXShowMenu）。不会搜索根窗口的可点击后代，也不会选择祖先列表项。窗口有效性独立通过 WindowServer 校验：ID、PID 和几何保持一致，进程未隐藏；同 App、同 Space 的上层窗口不能遮挡点击点。定向输入允许其他 App 覆盖与其他 Space，只有 global 额外要求 on-screen。AX 可选命中查询无值、不支持、未实现、通信失败或元素失效时，可在独立窗口复验后走鼠标；权限关闭、非法参数与未知错误拒绝输入。AX 窗口归属未知只走鼠标，明确不匹配则拒绝。鼠标左键单击/双击使用 sky_click，其余沿 app_post；显式开启全局指针时走 global，并要求点击点不被其他 App 遮挡。窗口在查询前和发送输入前各验证一次。AX 或鼠标发出后失败不换路重放，坐标 auto 回读只读，不激活/重开窗口。元素索引有效 AX 点击和显式定向点击保留；前台鼠标点击按下文专用策略执行。hit test 使用窗口局部坐标加窗口原点，截图缩放仅发生一次。
+macOS 坐标 `auto` 点击只对实时命中、属于当前窗口且包含点击点的直接控件执行 AXPress（右键为 AXShowMenu）。不会搜索根窗口的可点击后代，也不会选择祖先列表项。窗口有效性独立通过 WindowServer 校验：ID、PID 和几何保持一致，进程未隐藏；同 App、同 Space 的上层窗口不能遮挡点击点。定向输入允许其他 App 覆盖与其他 Space，只有 global 额外要求 on-screen。AX 可选命中查询无值、不支持、未实现、通信失败或元素失效时，可在独立窗口复验后走鼠标；权限关闭、非法参数与未知错误拒绝输入。AX 窗口归属未知只走鼠标，明确不匹配则拒绝。鼠标左键单击/双击与右键单击使用 sky_click，其余沿 app_post；显式开启全局指针时走 global，并要求点击点不被其他 App 遮挡。窗口在查询前和发送输入前各验证一次。AX 或鼠标发出后失败不换路重放，坐标 auto 回读只读，不激活/重开窗口。元素索引有效 AX 点击和显式定向点击保留；前台鼠标点击按下文专用策略执行。hit test 使用窗口局部坐标加窗口原点，截图缩放仅发生一次。
 
 相关回归位于 `CoordinateClickTests.swift`；真实第三方 App 的命中结果和鼠标投递效果仍需 GUI 验收。
 
@@ -218,7 +218,7 @@ click MCP 回执中的 `_meta.ocuDiagnostic` 关联 `ai.today.ocu / input` 的 O
 
 ### 后台输入默认与显式兼容路径
 
-`OPEN_COMPUTER_USE_COORDINATE_CLICK_MODE=background` 让 auto 的鼠标分支保持后台优先，即使显式前台点击已获授权也不改变默认路由。`OPEN_COMPUTER_USE_ALLOW_FOREGROUND_CLICKS=1` 只允许调用者显式使用 global 点击，不扩大滚动或拖拽权限。元素和坐标的鼠标分支共用窗口校验与选路；SkyLight 不支持的右键、中键或多击使用窗口验证后的 app_post；不保证所有应用响应此路径。
+`OPEN_COMPUTER_USE_COORDINATE_CLICK_MODE=background` 让 auto 的鼠标分支保持后台优先，即使显式前台点击已获授权也不改变默认路由。`OPEN_COMPUTER_USE_ALLOW_FOREGROUND_CLICKS=1` 只允许调用者显式使用 global 点击，不扩大滚动或拖拽权限。元素和坐标的鼠标分支共用窗口校验与选路；SkyLight 不支持的中键或多击使用窗口验证后的 app_post；不保证所有应用响应此路径。
 
 自动动作回读关闭时，键盘仍实时检查接收者，不能使用点击前缓存的焦点。动作返回不证明输入已被应用消费；模型应在一轮 JS 的末尾显式观察并核对结果。后台键盘与真实鼠标是否不干扰用户，仍须对目标 App 做验收。这里复用上游 SkyLight 实现，不宣称复制闭源 Codex 的内部调用栈。
 
@@ -241,3 +241,5 @@ click MCP 回执中的 `_meta.ocuDiagnostic` 关联 `ai.today.ocu / input` 的 O
 ### 粘贴结算与生产分派回归
 
 paste_text 提交后保留新剪贴板内容，不用任意读取者回执触发恢复，也不定时恢复旧数据。仅菜单/键盘动作尝试之前失败才在仍持有所有权时恢复原格式；提交后错误标记未知结果，不重放。此副作用在工具 schema 和 JS 文档明确说明。SkyKeyboardDeliveryBackend 只注入系统查询/SPI 边界，测试直接执行 SkyKeyboardDispatcher.deliver 的真实前后台分支，覆盖自然前台变化、窗口失效与清理。
+
+JS 的 click / pressKey / typeText 在 native 请求前拒绝未知 options 字段、无效按键/次数/方法。组合键使用 `pressKey("super+s")`；`modifiers`、`durationMs` 和拼错的 `button` 不再静默忽略。详见[后台右键验收](histories/2026-10/20261011-1730-background-right-click.md)。

@@ -1,6 +1,10 @@
 import Foundation
 
 func normalizedElementIndexArgument(_ value: Any?) -> String? {
+    if let number = value as? NSNumber, CFGetTypeID(number) == CFBooleanGetTypeID() {
+        return nil
+    }
+
     if let string = value as? String {
         return string.isEmpty ? nil : string
     }
@@ -48,6 +52,7 @@ public final class ComputerUseToolDispatcher {
 
     public func callTool(name: String, arguments: [String: Any]) throws -> ToolCallResult {
         _ = try ExecutionPolicy.current()
+        try validateNativeToolArguments(name: name, arguments: arguments)
         if name != "click" || arguments["popup_token"] == nil { service.discardHoverPopups() }
         var input = !["list_apps", "get_app_state"].contains(name)
         if name == "hover", case .observation = try HoverRequest(arguments: arguments).target {
@@ -81,7 +86,7 @@ public final class ComputerUseToolDispatcher {
                 elementIndex: optionalElementIndex(in: arguments),
                 x: optionalDouble("x", in: arguments),
                 y: optionalDouble("y", in: arguments),
-                clickCount: Int(optionalDouble("click_count", in: arguments) ?? 1),
+                clickCount: try optionalPositiveInt("click_count", in: arguments) ?? 1,
                 mouseButton: optionalString("mouse_button", in: arguments) ?? "left",
                 clickMethod: try parseClickMethod(optionalString("click_method", in: arguments))
             )
@@ -229,41 +234,11 @@ public final class ComputerUseToolDispatcher {
     }
 
     private func positiveInt(from value: Any, key: String, expectedDescription: String) throws -> Int {
-        if let integer = value as? Int {
-            return try validatePositiveInt(integer, key: key, expectedDescription: expectedDescription)
-        }
-
-        if let double = value as? Double {
-            return try validatePositiveWholeNumber(double, key: key, expectedDescription: expectedDescription)
-        }
-
-        if let number = value as? NSNumber {
-            if CFGetTypeID(number as CFTypeRef) == CFBooleanGetTypeID() {
-                throw ComputerUseError.invalidArguments("\(key) must be \(expectedDescription)")
-            }
-            return try validatePositiveWholeNumber(number.doubleValue, key: key, expectedDescription: expectedDescription)
-        }
-
-        throw ComputerUseError.invalidArguments("\(key) must be \(expectedDescription)")
-    }
-
-    private func validatePositiveWholeNumber(_ value: Double, key: String, expectedDescription: String) throws -> Int {
-        guard value.isFinite, value.rounded(.towardZero) == value else {
+        let integer = try nativeToolInteger(value, key: key)
+        guard integer > 0 else {
             throw ComputerUseError.invalidArguments("\(key) must be \(expectedDescription)")
         }
-
-        guard value >= Double(Int.min), value <= Double(Int.max) else {
-            throw ComputerUseError.invalidArguments("\(key) is outside the supported integer range")
-        }
-
-        return try validatePositiveInt(Int(value), key: key, expectedDescription: expectedDescription)
-    }
-
-    private func validatePositiveInt(_ value: Int, key: String, expectedDescription: String) throws -> Int {
-        guard value > 0 else {
-            throw ComputerUseError.invalidArguments("\(key) must be \(expectedDescription)")
-        }
-        return value
+        return integer
     }
 }
 
