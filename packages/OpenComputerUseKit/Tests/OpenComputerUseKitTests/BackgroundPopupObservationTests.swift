@@ -42,12 +42,13 @@ final class BackgroundPopupObservationTests: XCTestCase {
     }
 
     private func capture(
-        readState: @escaping () -> Observation.State?, allowInput: Bool = false,
+        readState: @escaping () -> Observation.State?, allowInput: Bool = false, allowBackgroundInput: Bool = false,
         captureImage: @escaping (Observation.Window) throws -> Data?
     ) -> [Observation] {
         Observation.capture(
             rootWindowID: root.windowID, pid: root.pid, rootBounds: root.bounds,
             requireForeground: false, allowInput: allowInput,
+            allowBackgroundInput: allowBackgroundInput,
             dependencies: .init(readState: readState, captureImage: captureImage)
         )
     }
@@ -70,6 +71,53 @@ final class BackgroundPopupObservationTests: XCTestCase {
         let metadata = (candidate.content.last?.dictionary["_meta"] as? [String: Any])?["ocuPopup"] as? [String: Any]
         XCTAssertNil(metadata?["token"])
         XCTAssertEqual(metadata?["observationOnly"] as? Bool, true)
+    }
+
+    func testExplicitBackgroundCapabilityIssuesOnlySkyClickTokenWithoutForegroundRequirement() throws {
+        let data = try image()
+        let state = Observation.State(windows: [popup, root], rootIsForeground: false)
+        let candidate = try XCTUnwrap(capture(
+            readState: { state }, allowBackgroundInput: true, captureImage: { _ in data }
+        ).first)
+        XCTAssertFalse(candidate.permitsInput)
+        XCTAssertTrue(candidate.permitsBackgroundInput)
+        let text = candidate.content.compactMap { $0.dictionary["text"] as? String }.joined(separator: "\n")
+        for fragment in ["click_method:\"sky_click\"", "clickMethod:\"sky_click\"", "Candidate only, not parent proof",
+                         "30 seconds", "no activation, global input or fallback", "Never replay"] {
+            XCTAssertTrue(text.contains(fragment), fragment)
+        }
+        let metadata = (candidate.content.last?.dictionary["_meta"] as? [String: Any])?["ocuPopup"] as? [String: Any]
+        XCTAssertEqual(metadata?["token"] as? String, candidate.token)
+        XCTAssertEqual(metadata?["clickMethod"] as? String, "sky_click")
+        XCTAssertEqual(metadata?["backgroundClickCapable"] as? Bool, true)
+        XCTAssertEqual(metadata?["observationOnly"] as? Bool, false)
+        XCTAssertFalse(candidate.content(policy: .compatible)
+            .contains { ($0.dictionary["text"] as? String)?.contains("popup_token") == true })
+        setenv("OPEN_COMPUTER_USE_EXECUTION_MODE", "invalid", 1)
+        XCTAssertFalse(candidate.content
+            .contains { ($0.dictionary["text"] as? String)?.contains("popup_token") == true })
+    }
+
+    func testBackgroundCapabilityDoesNotBypassRootOrPopupStabilityChecks() throws {
+        let data = try image()
+        let initial = Observation.State(windows: [popup, root], rootIsForeground: false)
+        let moved = Observation.Window(
+            windowID: popup.windowID,
+            pid: popup.pid,
+            bounds: popup.bounds.offsetBy(dx: 1, dy: 0)
+        )
+        for failure in 1 ... 4 {
+            var reads = 0
+            XCTAssertTrue(capture(readState: {
+                reads += 1
+                return reads == failure ? nil : initial
+            }, allowBackgroundInput: true, captureImage: { _ in data }).isEmpty)
+        }
+        var state = initial
+        XCTAssertTrue(capture(readState: { state }, allowBackgroundInput: true, captureImage: { _ in
+            state = .init(windows: [moved, self.root], rootIsForeground: false)
+            return data
+        }).isEmpty)
     }
 
     func testRootIdentityGeometryAndVisibilityFailuresAtEveryReadDiscardBatch() throws {
@@ -191,7 +239,7 @@ final class BackgroundPopupObservationTests: XCTestCase {
         // 使用真实 capture；缺少 AXWindow 时必须明确说明限制，且无需调用 GUI。
         let result = try service.hover(app: "test.popup", arguments: ["observe_only": true])
         let text = result.content.compactMap { $0.dictionary["text"] as? String }.joined(separator: "\n")
-        XCTAssertTrue(text.contains("No verifiable popup candidates"))
+        XCTAssertTrue(text.contains("Popup observation incomplete"))
         XCTAssertTrue(text.contains("does not prove no popup exists"))
         XCTAssertFalse(text.contains("popup_token"))
     }

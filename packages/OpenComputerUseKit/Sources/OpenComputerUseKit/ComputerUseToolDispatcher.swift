@@ -52,8 +52,14 @@ public final class ComputerUseToolDispatcher {
 
     public func callTool(name: String, arguments: [String: Any]) throws -> ToolCallResult {
         let foregroundObservation = service.takeForegroundObservation()
-        _ = try ExecutionPolicy.current()
-        try validateNativeToolArguments(name: name, arguments: arguments)
+        do {
+            _ = try ExecutionPolicy.current()
+            try validateNativeToolArguments(name: name, arguments: arguments)
+        } catch {
+            // 畸形参数也消耗旧弹层凭证，不能修正参数后重放同一观察。
+            service.discardHoverPopups()
+            throw error
+        }
         if name != "click" || arguments["popup_token"] == nil { service.discardHoverPopups() }
         var input = !["list_apps", "get_app_state"].contains(name)
         if name == "hover", case .observation = try HoverRequest(arguments: arguments).target {

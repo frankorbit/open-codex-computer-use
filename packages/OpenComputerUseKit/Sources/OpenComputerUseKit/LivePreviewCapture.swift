@@ -22,16 +22,23 @@ enum LivePreviewCapture {
         return config
     }
 
-    static func currentBounds(_ target: LivePreviewTarget) -> CGRect? {
-        guard let rows = CGWindowListCopyWindowInfo(.optionIncludingWindow, target.windowID) as? [[String: Any]],
+    static func currentBounds(
+        _ target: LivePreviewTarget,
+        readWindowInfo: (CGWindowListOption, CGWindowID) -> [[String: Any]]? = {
+            CGWindowListCopyWindowInfo($0, $1) as? [[String: Any]]
+        }
+    ) -> CGRect? {
+        // root 可位于其他 Space 或隐藏；可见性仅约束额外采集的 popup。
+        guard let rows = readWindowInfo(.optionIncludingWindow, target.windowID),
               let row = rows.first(where: {
                   ($0[kCGWindowNumber as String] as? UInt32) == target.windowID &&
                       ($0[kCGWindowOwnerPID as String] as? Int32) == target.pid
-              }), let bounds = row[kCGWindowBounds as String] as? NSDictionary
+              }), let dictionary = row[kCGWindowBounds as String] as? NSDictionary,
+              let bounds = CGRect(dictionaryRepresentation: dictionary)
         else {
             return nil
         }
-        return CGRect(dictionaryRepresentation: bounds)
+        return LivePreviewTarget(pid: target.pid, windowID: target.windowID, bounds: bounds)?.bounds
     }
 }
 

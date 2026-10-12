@@ -67,6 +67,12 @@
 
 ### 3. Tool Service 层
 
+普通窗口观察会附加同进程、几何关联的可见弹层图片，每幅图片紧邻自己的说明。主窗口图像及其坐标保持原样，附图不能用于主窗口坐标点击。同 PID、前后顺序和几何关系只产生候选，不构成父子所有权证明；独立标准 AX 窗口被排除。
+
+弹层的后台输入要求显式 `popup_token` 和 `sky_click`，只允许图片局部坐标的左键单击。一次性凭证绑定主窗口与弹层身份、几何和有效期；锁等待、焦点准备及每次 mouse-down 前复核，并要求落点对应的真实接收窗口匹配。失败不换路、不重放，已投递事件的结果须重新观察。普通后台点击、键盘、滚动及拖拽仍使用原路径。
+
+弹层采集是有总预算的附加观察：先筛选 WindowServer 候选，再执行有界 AX 查询和截图。超时或未完成时返回已有主窗口结果并明确标记观察不完整；迟到结果不进入输入缓存。主窗口预览独立验证窗口存在性，切换 Space 不因屏上候选缺失而停流；弹层失效只撤销附加图层。
+
 - `ComputerUseService` 负责把 Computer Use tool 请求映射到本地能力，`ComputerUseToolDispatcher` 则把工具的参数解析与 service 方法分发收敛成 MCP server 和 `open-computer-use call` 共用的一层。macOS dispatcher 在清理 popup、更新输入预览或调用 service 前，按工具定义校验字段白名单、必填项、基本类型、枚举和整数边界；未知字段不再静默丢弃，错误不回显任意输入内容。保留数字元素索引及方法名大小写兼容。独立的 JS 选项校验不能替代此入口校验。
 - Codex plugin 的 `.mcp.json` 默认不把 native tools 直接暴露给模型，而是启动 `scripts/node-repl/open-computer-use-repl.mjs`。adapter 以 child MCP client 连接同一个 native runtime，并只对外列出 `js` / `js_reset`；JavaScript 通过异步 app-bound API（`cua.getApp(...)`、`app.click(...)`、`app.getAXState()` 等）调用 native tools。
 - REPL 使用 Node.js 自带的 evaluator，因此保留 top-level `await` 和跨调用 lexical bindings；真正执行代码的 kernel 位于 Worker 中，超时会终止 Worker 并重建干净 session，避免 `while (true)` 挂死 MCP transport。

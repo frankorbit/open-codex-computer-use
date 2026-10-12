@@ -34,13 +34,15 @@ final class PopupReadOnlyTests: XCTestCase {
                     readbacks += 1
                     return snapshot
                 },
-                captureHoverPopups: { _ in [popup] }
+                captureHoverPopups: { _, mode in
+                    XCTAssertEqual(mode, .explicit)
+                    return .init(popups: [popup])
+                }
             )
         )
         let dispatcher = ComputerUseToolDispatcher(service: service)
         let server = StdioMCPServer(service: service, backgroundStateReset: {})
         for invalidate in [
-            { _ = try service.getAppState(app: "test.popup") },
             { dispatcher.discardHoverPopups() },
             { server.endSession() }
         ] {
@@ -60,6 +62,82 @@ final class PopupReadOnlyTests: XCTestCase {
                 XCTAssertTrue($0.localizedDescription.contains("No current popup_token"))
             }
         }
+    }
+
+    func testOrdinaryObservationIncludesPopupAndInvalidArgumentsConsumeLease() throws {
+        let key = "OPEN_COMPUTER_USE_EXECUTION_MODE"
+        let old = ProcessInfo.processInfo.environment[key]
+        setenv(key, "background", 1)
+        defer { if let old { setenv(key, old, 1) } else { unsetenv(key) } }
+        let (snapshot, legacyPopup) = fixture()
+        var captures = 0
+        let service = ComputerUseService(
+            snapshots: ["test.popup": snapshot],
+            snapshotDependencies: SnapshotDependencies(
+                resolve: { _ in snapshot.app },
+                build: { _, _, _, policy in
+                    XCTAssertEqual(policy, .readOnly)
+                    return snapshot
+                },
+                captureHoverPopups: { _, mode in
+                    XCTAssertEqual(mode, .ordinary)
+                    captures += 1
+                    var popup = legacyPopup
+                    popup.permitsBackgroundInput = true
+                    return .init(popups: [popup])
+                }
+            )
+        )
+        let dispatcher = ComputerUseToolDispatcher(service: service)
+        let result = try dispatcher.callTool(name: "get_app_state", arguments: [
+            "app": "test.popup", "initialize": false
+        ])
+        XCTAssertEqual(captures, 1)
+        XCTAssertEqual(result.content.count, 3)
+        let metadata = (result.content.last?.dictionary["_meta"] as? [String: Any])?["ocuPopup"] as? [String: Any]
+        XCTAssertEqual(metadata?["clickMethod"] as? String, "sky_click")
+        XCTAssertEqual(metadata?["backgroundClickCapable"] as? Bool, true)
+        XCTAssertThrowsError(try dispatcher.callTool(name: "click", arguments: [
+            "app": "test.popup", "popup_token": legacyPopup.token,
+            "x": 1, "y": 1, "click_method": "sky_click", "modifiers": []
+        ]))
+        XCTAssertThrowsError(try service.clickPopup(app: "test.popup", arguments: [
+            "popup_token": legacyPopup.token, "x": 1, "y": 1, "click_method": "sky_click"
+        ])) {
+            XCTAssertTrue($0.localizedDescription.contains("No current popup_token"))
+        }
+        XCTAssertEqual(captures, 1)
+    }
+
+    func testIncompleteObservationKeepsMainSnapshotButDropsAllPopupTokens() throws {
+        let (snapshot, popup) = fixture()
+        var captures = 0
+        let service = ComputerUseService(
+            snapshots: ["test.popup": snapshot],
+            snapshotDependencies: .init(
+                resolve: { _ in snapshot.app }, build: { _, _, _, _ in snapshot },
+                captureHoverPopups: { _, _ in
+                    captures += 1
+                    // 即便依赖错误地携带部分旧图片，incomplete 也不能把它们变成新凭证。
+                    return .init(popups: [popup], isIncomplete: captures == 2)
+                }
+            )
+        )
+        _ = try service.hover(app: "test.popup", arguments: ["observe_only": true])
+        let result = try service.hover(app: "test.popup", arguments: ["observe_only": true])
+        let text = result.content.compactMap { $0.dictionary["text"] as? String }.joined(separator: "\n")
+        XCTAssertTrue(text.contains("Popup observation incomplete"))
+        XCTAssertFalse(text.contains("No verifiable popup candidates"))
+        XCTAssertFalse(text.contains("popup_token="))
+        XCTAssertEqual(result.content.count, 2)
+        XCTAssertThrowsError(try service.clickPopup(app: "test.popup", arguments: [
+            "popup_token": popup.token, "x": 1, "y": 1
+        ])) {
+            XCTAssertTrue($0.localizedDescription.contains("No current popup_token"))
+        }
+        // 只读 hover 仍能使用主快照回读；附加观察失败不能破坏主状态缓存。
+        XCTAssertNoThrow(try service.hover(app: "test.popup", arguments: ["observe_only": true]))
+        XCTAssertEqual(captures, 3)
     }
 
     private func fixture() -> (AppSnapshot, HoverPopupObservation) {

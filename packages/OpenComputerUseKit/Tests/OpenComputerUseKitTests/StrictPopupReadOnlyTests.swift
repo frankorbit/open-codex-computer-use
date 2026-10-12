@@ -51,13 +51,14 @@ final class StrictPopupReadOnlyTests: XCTestCase {
                 return snapshot
             },
             prepareOpen: { _ in XCTFail("must not open"); throw ComputerUseError.message("unexpected") },
-            captureHoverPopups: { _ in
+            captureHoverPopups: { _, mode in
+                XCTAssertEqual(mode, .explicit)
                 capture()
-                return [HoverPopupObservation(
+                return .init(popups: [HoverPopupObservation(
                     token: "read-only-popup", windowID: 2, pid: 11,
                     bounds: CGRect(x: 100, y: 100, width: 100, height: 100),
                     imageData: Data([1]), pixelSize: CGSize(width: 100, height: 100)
-                )]
+                )])
             }
         ))
     }

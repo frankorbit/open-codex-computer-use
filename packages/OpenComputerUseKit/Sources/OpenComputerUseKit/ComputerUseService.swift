@@ -603,13 +603,7 @@ public final class ComputerUseService {
 
     private func popupObservationResult(for query: String) throws -> ToolCallResult {
         let fresh = try refreshSnapshot(for: query)
-        let popups = snapshotDependencies.captureHoverPopups(fresh)
-        hoverPopupCache.record(popups, snapshot: fresh, now: ProcessInfo.processInfo.systemUptime)
-        let main = snapshotResult(for: fresh, style: .actionResult)
-        let popupContent = popups.isEmpty
-            ? [ToolResultContentItem.text(HoverPopupObservation.unavailableNote)]
-            : popups.flatMap(\.content)
-        return ToolCallResult(content: main.content + popupContent)
+        return snapshotResult(for: fresh, style: .actionResult, reportMissingPopups: true)
     }
 
     func discardHoverPopups() { hoverPopupCache.clear() }
@@ -618,24 +612,25 @@ public final class ComputerUseService {
         // 参数失败和授权开关变化也必须消耗旧观察。
         var pending = hoverPopupCache
         hoverPopupCache.clear()
-        try ExecutionPolicy.current().requireForeground("Popup global click")
         let request = try HoverPopupClickRequest(arguments: arguments)
         let lease = try pending.take(request.token)
-        guard foregroundHoverEnabled(environment: ProcessInfo.processInfo.environment) else {
-            throw ComputerUseError.unsupportedTool("hover popup click")
+        if request.method == .global {
+            try ExecutionPolicy.current().requireForeground("Popup global click")
+            guard foregroundHoverEnabled(environment: ProcessInfo.processInfo.environment) else {
+                throw ComputerUseError.unsupportedTool("hover popup click")
+            }
         }
-        try validateClickMethod(.global, hasElementIndex: false, environment: ProcessInfo.processInfo.environment)
+        try validateClickMethod(
+            request.method, hasElementIndex: false, environment: ProcessInfo.processInfo.environment
+        )
         let snapshot = try currentSnapshot(for: query)
-        let point = try lease.globalPoint(for: request.point, snapshot: snapshot, now: ProcessInfo.processInfo.systemUptime)
+        var point = CGPoint.zero
         do {
             return try dispatchPopupClick(
-                validate: { try validateHoverPopupReceiver(lease.popup, point: point, snapshot: snapshot) },
-                submit: {
-                    try InputDiagnostics.input(route: .global, point: point) {
-                        try InputSimulation.clickGlobally(at: inputEventPoint(fromScreenStatePoint: point), button: .left, clickCount: 1)
-                    }
-                },
-                readBack: { self.snapshotResult(for: try self.refreshSnapshot(for: query), style: .actionResult) }
+                method: request.method,
+                validate: { point = try validateHoverPopupClick(lease, request: request, snapshot: snapshot) },
+                submit: { try submitHoverPopupClick(lease, request: request, snapshot: snapshot, point: point) },
+                readBack: { try self.snapshotResult(for: self.refreshSnapshot(for: query), style: .actionResult) }
             )
         } catch {
             snapshotCache.invalidate(query: query, resolvedApp: snapshot.app)
@@ -2298,12 +2293,27 @@ public final class ComputerUseService {
         )
     }
 
-    private func snapshotResult(for snapshot: AppSnapshot, style: SnapshotTextStyle) -> ToolCallResult {
+    private func snapshotResult(
+        for snapshot: AppSnapshot, style: SnapshotTextStyle, reportMissingPopups: Bool = false
+    ) -> ToolCallResult {
         LiveWindowPreview.publish(snapshot)
         var content = [ToolResultContentItem.text(snapshot.renderedText(style: style))]
         if let note = snapshot.screenshotNote { content.append(.text(note)) }
         if let screenshotData = snapshot.screenshotData {
             content.append(.screenshotImage(screenshotData))
+        }
+        // 主图坐标保持不变；独立弹层以相邻说明和独立图片交付，避免误判点击无效。
+        let observation = snapshotDependencies.captureHoverPopups(snapshot, reportMissingPopups ? .explicit : .ordinary)
+        guard !observation.isIncomplete else {
+            hoverPopupCache.clear()
+            content.append(.text(HoverPopupCaptureResult.incompleteNote))
+            return ToolCallResult(content: content)
+        }
+        let popups = observation.popups
+        hoverPopupCache.record(popups, snapshot: snapshot, now: ProcessInfo.processInfo.systemUptime)
+        content.append(contentsOf: popups.flatMap(\.content))
+        if reportMissingPopups, popups.isEmpty {
+            content.append(.text(HoverPopupObservation.unavailableNote))
         }
         return ToolCallResult(content: content)
     }

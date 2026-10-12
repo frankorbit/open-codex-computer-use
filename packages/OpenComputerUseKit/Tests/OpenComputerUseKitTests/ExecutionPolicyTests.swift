@@ -131,8 +131,7 @@ final class ExecutionPolicyTests: XCTestCase {
         let dispatcher = ComputerUseToolDispatcher(service: service)
         let requests: [(String, [String: Any])] = [
             ("click", ["app": "missing", "x": 0, "y": 0, "click_method": "global"]),
-            ("hover", ["app": "missing", "x": 0, "y": 0]),
-            ("click", ["app": "missing", "popup_token": "old", "x": 0, "y": 0])
+            ("hover", ["app": "missing", "x": 0, "y": 0])
         ]
         for (name, arguments) in requests {
             XCTAssertThrowsError(try dispatcher.callTool(name: name, arguments: arguments)) { error in

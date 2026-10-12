@@ -23,6 +23,11 @@ final class LiveWindowPreview: NSObject {
     private var capture: SCStream?
     private var worker: Task<Void, Never>?
     private var monitor: Task<Void, Never>?
+    private let popupCapture = LivePreviewPopupCapture()
+    private var popupWorker: Task<Void, Never>?
+    private var popupState = LivePreviewPopupState()
+    private var rootImage: CGImage?
+    private var canvasBounds: CGRect?
     private var windowBounds: CGRect?
     private var observingReopen = false
     private var inputActive = false
@@ -89,6 +94,7 @@ final class LiveWindowPreview: NSObject {
             return
         }
         state.reopen()
+        clear("正在连接窗口镜像…")
         restart()
     }
 
@@ -129,6 +135,11 @@ final class LiveWindowPreview: NSObject {
         previous?.cancel()
         monitor?.cancel()
         monitor = nil
+        popupWorker?.cancel()
+        popupWorker = nil
+        popupState.reset()
+        rootImage = nil
+        canvasBounds = nil
         let oldCapture = capture
         capture = nil
         let generation = state.generation
@@ -217,17 +228,25 @@ final class LiveWindowPreview: NSObject {
             Notification.Name("ai.today.ocu.stop-run"), object: session, userInfo: nil, deliverImmediately: true
         )
     }
+}
 
+// MARK: - 本地弹层刷新与合成
+
+extension LiveWindowPreview {
     private func monitorTarget(_ target: LivePreviewTarget, app: NSRunningApplication, size: CGSize, generation: UUID) {
         monitor = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self, state.accepts(generation) else {
                     return
                 }
-                guard !app.isTerminated, let bounds = LivePreviewCapture.currentBounds(target) else {
+                let now = ProcessInfo.processInfo.systemUptime
+                guard !app.isTerminated,
+                      let update = popupState.updateTarget(target, appIsHidden: app.isHidden, now: now)
+                else {
                     select(nil)
                     return
                 }
+                let bounds = update.bounds
                 if bounds.size != size {
                     select(
                         LivePreviewTarget(pid: target.pid, windowID: target.windowID, bounds: bounds),
@@ -235,14 +254,26 @@ final class LiveWindowPreview: NSObject {
                     )
                     return
                 }
+                let previousBounds = windowBounds
                 windowBounds = bounds
-                do { try await Task.sleep(for: .milliseconds(250)) } catch { return }
+                if LivePreviewPopupState.needsRender(
+                    previousBounds: previousBounds, bounds: bounds, popupInvalidated: update.invalidated
+                ) { render() }
+                if rootImage != nil,
+                   let current = LivePreviewTarget(pid: target.pid, windowID: target.windowID, bounds: bounds),
+                   !LivePreviewPopup.candidates(target: current, state: .init(windows: popupState.windows)).isEmpty,
+                   let request = popupState.begin(now: now) {
+                    refreshPopups(current, request: request, generation: generation)
+                }
+                do { try await Task.sleep(for: .milliseconds(100)) } catch { return }
             }
         }
     }
 
     private func receive(_ image: CGImage, target: LivePreviewTarget, captureSize: CGSize) {
-        guard let bounds = LivePreviewCapture.currentBounds(target) else {
+        guard let app = targetApp, !app.isTerminated,
+              let bounds = LivePreviewCapture.currentBounds(target)
+        else {
             select(nil)
             return
         }
@@ -252,8 +283,47 @@ final class LiveWindowPreview: NSObject {
             return
         }
         windowBounds = bounds
-        view.showFrame(image)
-        view.sourceSize = captureSize
+        rootImage = image
+        // root 移动后，旧弹层必须等下一次 metadata 观察重新确认。
+        if app.isHidden || popupState.windows.first(where: { $0.windowID == target.windowID })?.bounds != bounds {
+            popupState.observe([], now: ProcessInfo.processInfo.systemUptime)
+        }
+        render()
+    }
+
+    private func refreshPopups(
+        _ target: LivePreviewTarget, request: LivePreviewPopupState.Request, generation: UUID
+    ) {
+        popupWorker?.cancel()
+        popupWorker = Task { [weak self, popupCapture] in
+            let layers = await popupCapture.refresh(target: target, expected: request.windows)
+            guard let self, !Task.isCancelled, state.accepts(generation),
+                  let app = targetApp, !app.isTerminated else { return }
+            let now = ProcessInfo.processInfo.systemUptime
+            guard let update = popupState.updateTarget(target, appIsHidden: app.isHidden, now: now) else {
+                select(nil)
+                return
+            }
+            let accepted = popupState.finish(request, layers: layers, now: now)
+            if update.invalidated || accepted { render() }
+        }
+    }
+
+    private func render() {
+        guard let rootImage, let windowBounds else { return }
+        // 只有 root 新帧、弹层新图或失效时重绘；idle 不做逐帧 AX/截图。
+        popupState.observe(popupState.windows, now: ProcessInfo.processInfo.systemUptime)
+        let layers = popupState.layers
+        let composed = LivePreviewPopup.composite(root: rootImage, bounds: windowBounds, layers: layers)
+        let canvas = composed == nil ? windowBounds : LivePreviewPopup.canvas(root: windowBounds, layers: layers)
+        if canvasBounds != canvas {
+            // 坐标空间改变时，不沿用上一幅合成画面的虚拟光标位置。
+            view.cursorState = nil
+            view.cursorPoint = nil
+        }
+        canvasBounds = canvas
+        view.showFrame(composed ?? rootImage)
+        view.sourceSize = canvas.size
     }
 
     private static func stopCapture(_ stream: SCStream) async {
@@ -265,6 +335,11 @@ final class LiveWindowPreview: NSObject {
     }
 
     private func clear(_ message: String) {
+        popupWorker?.cancel()
+        popupWorker = nil
+        popupState.reset()
+        rootImage = nil
+        canvasBounds = nil
         view.cancelInteraction()
         view.image = nil
         view.message = message
@@ -273,7 +348,7 @@ final class LiveWindowPreview: NSObject {
     }
 
     func cursor(tip: CGPoint?, windowID: CGWindowID?, state cursorState: SoftwareCursorGlyphRenderState?) {
-        guard let tip, windowID == state.target?.windowID, let bounds = windowBounds,
+        guard let tip, windowID == state.target?.windowID, let bounds = canvasBounds,
               let screen = NSScreen.screens.first, !state.hidden, view.image != nil
         else {
             view.cursorState = nil

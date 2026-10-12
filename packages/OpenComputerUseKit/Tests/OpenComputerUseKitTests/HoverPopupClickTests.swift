@@ -82,9 +82,14 @@ struct HoverPopupClickTests {
     @Test func `request rejects wrong coordinate and action contracts`() throws {
         let base: [String: Any] = ["popup_token": token, "x": 1, "y": 2]
         #expect(try HoverPopupClickRequest(arguments: base).point == CGPoint(x: 1, y: 2))
+        #expect(try HoverPopupClickRequest(arguments: base).method == .global)
+        #expect(try HoverPopupClickRequest(arguments: base.merging(["click_method": "sky_click"]) { _, new in
+            new
+        }).method == .skyClick)
         for override: [String: Any] in [
             ["popup_token": "invalid"], ["popup_token": 1], ["element_index": "3"],
-            ["click_method": "sky_click"], ["mouse_button": "right"], ["click_count": 2],
+            ["click_method": "auto"], ["click_method": "app_post"], ["click_method": "accessibility"],
+            ["click_method": true], ["mouse_button": "right"], ["click_count": 2],
             ["click_count": Double.infinity], ["click_count": true], ["x": true],
             ["y": Double.nan], ["x": -1], ["x": "2"]
         ] {

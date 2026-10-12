@@ -97,6 +97,21 @@ func skyClickWindowMatchesTarget(
     skyKeyWindowMatchesTarget(windowInfo: windowInfo, windowID: windowID, pid: pid)
 }
 
+/// 准备可能阻塞；开始投递及每次 down 前复验，已发出的 down 必须允许对应 up 完成。
+func dispatchSkyClickEvents(
+    _ recipe: [SkyClickEventStep],
+    validateBeforeSubmission: (() throws -> Void)? = nil,
+    post: (SkyClickEventStep) throws -> Void,
+    wait: (TimeInterval) -> Void
+) throws {
+    try validateBeforeSubmission?()
+    for step in recipe {
+        if step.kind == .down { try validateBeforeSubmission?() }
+        try post(step)
+        wait(step.delayAfter)
+    }
+}
+
 enum SkyClickDispatcher {
     private static let primerScreenPoint = CGPoint(x: -1, y: -1)
     private static let primerWindowPoint = CGPoint(x: -1, y: -1)
@@ -119,7 +134,8 @@ enum SkyClickDispatcher {
         target: SkyClickTarget,
         clickCount: Int,
         button: MouseButtonKind = .left,
-        spi: SkyLightSPI = .shared
+        spi: SkyLightSPI = .shared,
+        validateBeforeSubmission: (() throws -> Void)? = nil
     ) throws {
         guard spi.capability.isAvailable else {
             throw ComputerUseError.message(
@@ -134,6 +150,8 @@ enum SkyClickDispatcher {
             dispatchLock.unlock()
         }
 
+        // 锁等待期间可能已过期；发出合成焦点事件前先拒绝失效凭证。
+        try validateBeforeSubmission?()
         try validate(target: target)
         let recipe = try skyClickEventRecipe(clickCount: clickCount, button: button)
         guard let source = CGEventSource(stateID: .hidSystemState) else {
@@ -163,7 +181,7 @@ enum SkyClickDispatcher {
         }
 
         do {
-            for step in recipe {
+            try dispatchSkyClickEvents(recipe, validateBeforeSubmission: validateBeforeSubmission, post: { step in
                 let screenPoint = step.pointKind == .target ? target.screenPoint : primerScreenPoint
                 let windowPoint = step.pointKind == .target ? target.windowPoint : primerWindowPoint
                 guard let event = CGEvent(
@@ -195,12 +213,12 @@ enum SkyClickDispatcher {
                     "window_point": InputDiagnostics.point(windowPoint),
                     "channels": button == .left ? "skylight_and_public_pid" : "skylight_pid",
                 ])
-
-                let delay = step.delayAfter * InputTiming.skyClickDelayScale
+            }, wait: { interval in
+                let delay = interval * InputTiming.skyClickDelayScale
                 if delay > 0 {
                     Thread.sleep(forTimeInterval: delay)
                 }
-            }
+            })
         } catch {
             if let focusContext {
                 try? spi.endSyntheticTargetFocus(focusContext)

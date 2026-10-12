@@ -125,7 +125,8 @@ enum InputSimulation {
         windowID: CGWindowID,
         clickCount: Int,
         pid: pid_t,
-        button: MouseButtonKind = .left
+        button: MouseButtonKind = .left,
+        validateBeforeSubmission: (() throws -> Void)? = nil
     ) throws {
         try SkyClickDispatcher.click(
             target: SkyClickTarget(
@@ -136,7 +137,8 @@ enum InputSimulation {
                 pid: pid
             ),
             clickCount: clickCount,
-            button: button
+            button: button,
+            validateBeforeSubmission: validateBeforeSubmission
         )
     }
 

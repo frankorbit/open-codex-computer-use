@@ -38,7 +38,10 @@ public enum ToolDefinitions {
                 properties: [
                     "app": stringProperty(description: "App name or bundle identifier"),
                     "element_index": stringProperty(description: "Element index to click"),
-                    "popup_token": stringProperty(description: "One-use token from the immediately preceding hover popup image, valid for 30 seconds. Requires popup-local screenshot x/y and a global left single click; never use main-window coordinates."),
+                    "popup_token": stringProperty(description:
+                        "One-use token from a fresh popup image, valid for 30 seconds. "
+                            + "Use its advertised method: explicit sky_click in background or compatible global. "
+                            + "Left single click with popup-local screenshot x/y only; never use main-window coordinates."),
                     "x": numberProperty(description: "X coordinate in screenshot pixel coordinates"),
                     "y": numberProperty(description: "Y coordinate in screenshot pixel coordinates"),
                     "click_count": positiveIntegerProperty(description: "Number of clicks. Defaults to 1"),

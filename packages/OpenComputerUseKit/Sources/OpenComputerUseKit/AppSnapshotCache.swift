@@ -6,7 +6,8 @@ struct SnapshotDependencies {
     var build: (RunningAppDescriptor, SnapshotTextLimit, AccessibilityTreeLimits, SnapshotRecoveryPolicy) throws
         -> AppSnapshot
     var prepareOpen: (String) throws -> ApplicationOpeningRequest = AppDiscovery.prepareOpen
-    var captureHoverPopups: (AppSnapshot) -> [HoverPopupObservation] = HoverPopupObservation.capture
+    var captureHoverPopups: (AppSnapshot, HoverPopupObservationMode) -> HoverPopupCaptureResult
+        = HoverPopupObservation.capture
     var parkWindow: (CGWindowID, pid_t, AXUIElement) throws -> Void = { windowID, pid, window in
         try AgentDisplay.shared.park(windowID: windowID, pid: pid, window: window)
     }
