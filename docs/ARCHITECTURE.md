@@ -95,7 +95,7 @@
 - 这是增量迁移：`open-computer-use mcp` 保留原生 9-tool compatibility surface，macOS 的应用绑定与普通观察通过 `get_app_state.initialize` 区分，不增加生命周期工具；hover 开启后为 10 个。
 - `list_apps` 通过 Spotlight metadata query 拉取标准 application 目录里的 app bundle，并读取 `kMDItemUseCount` / `kMDItemLastUsedDate_Ranking` 这类系统元数据；再与 `NSWorkspace` 的运行态 app 合并，输出“当前运行中 + 近 14 天用过”的视图。
 - `get_app_state` 优先走真实 AX / 窗口截图；真实 app 必须同时有未最小化的 `AXWindow` 和可匹配的 on-screen `CGWindow`。普通观察不激活或抬升窗口；绑定时可后台启动或 reopen 一次，launch/reopen 回调返回后仅首次绑定使用单调时钟最多 3 秒的窗口就绪等待（约 100ms 间隔，出现即返回）；只探测 AX/CG 元数据，AX 单次读取最多 50ms 且受剩余预算约束，不截图、不遍历完整树、不激活或重放打开。等待前后验证 PID/启动时间身份，取消与权限错误立即退出。3 秒仅是窗口等待预算，不含系统启动调用和就绪后的完整快照；同步系统调用不承诺硬实时截止。等待超时保留 pending initialization 并报告应用已启动、窗口未就绪，后续只读观察可恢复。普通观察与就绪后快照竞争仍沿用原有短重试，仍无法匹配则返回 `Apple event error -10005: cgWindowNotFound`，不把 application 根节点或无截图窗口伪装成可操作状态。当目标是仓库内 fixture app 时，回退到 fixture 导出的合成状态。真实 AX tree 默认在 macOS、Linux、Windows 上最多渲染 1200 个节点、64 层深度；显式 `get_app_state` / `snapshot` 可通过 `max_tree_nodes` / `max_tree_depth` 覆盖预算，action tools 的刷新结果仍使用默认预算。snapshot 文本默认截断到 500 字符；显式 `get_app_state` / `snapshot` 可通过 `text_limit` 正整数或 `"max"` 覆盖，action tools 的刷新结果仍使用 500 字符默认值。对 Electron/WebView 这类深层 UI 会压缩空 `AXGroup` / `AXUnknown` wrapper、过滤 `AXScrollToVisible` 噪音和空字符串属性，避免 action-critical 的输入框被无语义容器挤出节点预算；但通用节点中的 `AXPress` / `AXConfirm` / `AXOpen` 子节点会形成文本摘要边界，避免多个可点击选项被合并成一个 container。这类动作节点如果 frame 有效、尺寸紧凑且不包含带 URL 的 `AXLink` 后代，会保留为带窗口相对 `Frame` 的 `button`，并用短文本后代作为按钮摘要，让 icon-only 和文字 Web 控件都能获得可区分的 `element_index`；包含带 URL 的 `AXLink` 后代时保留通用 wrapper 和链接子节点，避免导航链接被摘要吞掉。对原生 open panel / Finder column view 这类把内容放在 `AXContents` / `AXVisibleChildren` 里的控件，也会把可见文件项纳入元素树。
-- MCP 基础 9 个工具的 description / input schema 按官方 `computer-use` 文案和参数面收敛；应用初始化是 `get_app_state` 的参数，不另增 `open_app` 工具。
+- MCP 基础 9 个工具的 description / input schema 按官方 `computer-use` 文案和参数面收敛；macOS 额外提供只读的 `query`；应用初始化是 `get_app_state` 的参数，不另增 `open_app` 工具。
 - JS REPL 的 API 和当前官方 code-first 形态对齐到异步 app binding，而不是把离散 tools 简单包成同步函数。snapshot 的 `windowPlacement` 以及 keyboard action 的 `keyMethod` 会转换成 native tool 的 snake_case 参数。实现不复制或运行 proprietary `@oai/*` package；协议和行为记录在 `docs/references/js-repl.md`。
 - `open-computer-use call <tool> --args '{...}'` 会直接输出 MCP-style JSON result；`open-computer-use call --calls '[...]'` / `--calls-file <path>` 会在同一进程里顺序执行 JSON 数组里的 tool calls，并复用同一个 `ComputerUseService` 内存态，因此 `get_app_state` 之后的 action tool 可以继续使用同一轮 snapshot 的 `element_index`。序列执行默认会在成功的相邻操作之间 sleep 1 秒，也可以用 `--sleep <seconds>` 覆盖；遇到 `isError=true` 的 tool result 后停止。
 - 对真实 app 的 `get_app_state` / action tool 入口，当前只保留一层密码管理器 bundle denylist：bundle-id 直传时直接返回 safety denial；名称匹配时默认不解析到这些 app。终端、Chrome / Atlas 和系统组件不再属于内置阻止目标。
@@ -205,6 +205,12 @@
 macOS screenshot 在每轮捕获读取用户 JSON 配置，优先级为 ENV > 文件 > 默认值。npm launcher 提供 `ocu config` 查看、set、reset 和 path；支持 PNG/JPG/WebP、JPEG 质量、最大长边/超限缩小策略、最小总像素数丢弃与 SCK 超时，保留 hardware capture 优先路径。app-agent 按请求转发解析后的配置路径并清除未提供的 image 环境，防止常驻值污染。见[中文配置说明](configuration.zh-CN.md)与[English](configuration.md)。
 
 截图像素丢弃门槛按 width×height 计算，低于（不含等于）门槛不返回 image，但保留 AX 和原因；配置省略截图后拒绝坐标输入。WebP 无损编码通过固定版本 libwebp 静态链接，随 app/npm 制品带上许可文本。
+
+## 定向 AX 查询
+
+macOS 在原有 9 个工具之外新增 `query`，按文字或角色查找目标窗口的 AX 元素，不截图、不渲染完整树。Windows/Linux 保持原来的 9 个工具。查询只解析已运行的应用，使用有界 BFS（默认 500 个节点、最多 5000 个，2 秒协作式遍历截止时间），返回匹配项和完整性元数据。字符串和子节点分页同样有界，AX 读取错误会标记结果不完整。
+
+查询索引属于当前 native 会话，最多保留 5000 个、120 秒过期，结束会话时清理且永不复用。元素操作前核对进程身份、窗口归属、查询条件和最新几何；任何验证失败都要求重新查询，不使用旧坐标。JS `cua.getApp(name, { initialState: false })` 可跳过初始快照，`app.query()` 返回结构化结果。详见[查询说明](targeted-query.zh-CN.md)。
 
 ## Fork 的坐标点击修正
 

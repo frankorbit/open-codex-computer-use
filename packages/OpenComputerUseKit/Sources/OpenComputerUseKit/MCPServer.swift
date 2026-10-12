@@ -19,6 +19,7 @@ Ask the user before taking destructive or externally visible actions such as sen
 
 public final class StdioMCPServer {
     private let allowsForegroundClickOnce: Bool
+    private let service: ComputerUseService
     private let dispatcher: ComputerUseToolDispatcher
     private let backgroundStateReset: () -> Void
 
@@ -27,6 +28,7 @@ public final class StdioMCPServer {
         backgroundStateReset: @escaping () -> Void = resetOpenComputerUseBackgroundWindowState
     ) {
         allowsForegroundClickOnce = service.allowsForegroundClickOnce
+        self.service = service
         self.dispatcher = ComputerUseToolDispatcher(service: service)
         self.backgroundStateReset = backgroundStateReset
     }
@@ -135,6 +137,7 @@ public final class StdioMCPServer {
     /// instead of the stdio `run()` loop.
     public func endSession() {
         dispatcher.discardHoverPopups()
+        service.clearQueryIndexes()
         VisualCursorSupport.performOnMain {
             SoftwareCursorOverlay.reset()
             if livePreviewEnabled(environment: ProcessInfo.processInfo.environment) {

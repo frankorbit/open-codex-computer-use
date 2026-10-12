@@ -217,7 +217,7 @@ final class ApplicationOpeningTests: XCTestCase {
         XCTAssertEqual(harness.opens, 1)
         XCTAssertEqual(harness.builds, 1)
         XCTAssertFalse(ToolDefinitions.all.contains { $0.name == "open_app" })
-        XCTAssertEqual(ToolDefinitions.all.count, 10)
+        XCTAssertEqual(ToolDefinitions.all.count, 11)
     }
 
     func testInitializationAndPlacementAreRejectedBeforeSideEffects() {
