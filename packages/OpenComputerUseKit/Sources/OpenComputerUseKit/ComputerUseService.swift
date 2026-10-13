@@ -740,10 +740,20 @@ public final class ComputerUseService {
         LiveWindowPreview.invalidate()
         let app = try request.perform()
         snapshotCache.invalidate(query: query, resolvedApp: app)
+        let binding = SnapshotObservationBinding(app: app, processIdentity: snapshotDependencies.bindingIdentity(app))
+        try snapshotDependencies.openingWindowWait.run(validate: {
+            try binding.validate(current: self.snapshotDependencies.processIdentity(app.pid))
+        }, probe: { deadline in
+            try self.snapshotDependencies.openingWindowReady(app, deadline)
+        })
         // 使用系统回调身份，只重试观察，不重复发送 launch/reopen。
         let snapshot = try observeWithoutActivation {
-            try snapshotDependencies.build(app, textLimit, treeLimits, .readOnly)
+            try Task.checkCancellation()
+            try binding.validate(current: snapshotDependencies.processIdentity(app.pid))
+            return try snapshotDependencies.build(app, textLimit, treeLimits, .readOnly)
         }
+        try Task.checkCancellation()
+        try binding.validate(current: snapshotDependencies.processIdentity(app.pid))
         snapshotCache.finishInitialization(for: request.identity)
         return snapshot
     }

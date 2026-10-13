@@ -174,6 +174,10 @@ public enum SnapshotTextStyle {
 }
 
 enum SnapshotBuilder {
+    static func openingWindowReady(for app: RunningAppDescriptor, deadline: TimeInterval) throws -> Bool {
+        try OpeningWindowProbe.isReady(for: app, deadline: deadline)
+    }
+
     static func build(
         for app: RunningAppDescriptor,
         textLimit: SnapshotTextLimit = .defaults,
@@ -511,6 +515,57 @@ private func enableBestEffortAccessibilityModes(_ appElement: AXUIElement) -> Bo
     return manual == .success
 }
 
+private enum OpeningWindowProbe {
+    /// 只读取窗口元数据；独立 AX 对象上的超时不污染后续截图和树遍历。
+    static func isReady(for app: RunningAppDescriptor, deadline: TimeInterval) throws -> Bool {
+        guard AXIsProcessTrusted() else {
+            throw ComputerUseError.permissionDenied("Accessibility permission is required.")
+        }
+        let root = AXUIElementCreateApplication(app.pid)
+        var windows: [AXUIElement] = []
+        if let focused = try read(root, kAXFocusedWindowAttribute, deadline: deadline),
+           CFGetTypeID(focused) == AXUIElementGetTypeID() {
+            // 已校验 CF 类型，Swift 不支持该类型的条件转换。
+            // swiftlint:disable:next force_cast
+            windows.append(focused as! AXUIElement)
+        }
+        if let all = try read(root, kAXWindowsAttribute, deadline: deadline) as? [AXUIElement] { windows += all }
+        for window in windows {
+            guard try read(window, kAXRoleAttribute, deadline: deadline) as? String == kAXWindowRole as String,
+                  try read(window, kAXMinimizedAttribute, deadline: deadline) as? Bool != true else { continue }
+            let title = try read(window, kAXTitleAttribute, deadline: deadline) as? String
+            // SPI 查询也沿用该窗口的短 AX timeout；跨 Space 元数据仍允许匹配。
+            guard ProcessInfo.processInfo.systemUptime < deadline else { return false }
+            let windowID = SkyLightSPI.shared.windowID(for: window)
+            if WindowCapture.resolve(for: app.pid, exactWindowID: windowID, includeImage: false) != nil
+                || WindowCapture.resolve(for: app.pid, titleHint: title, includeImage: false) != nil {
+                return true
+            }
+        }
+        return false
+    }
+
+    private static func read(_ element: AXUIElement, _ attribute: String, deadline: TimeInterval) throws -> CFTypeRef? {
+        try Task.checkCancellation()
+        let remaining = deadline - ProcessInfo.processInfo.systemUptime
+        guard remaining > 0 else { throw ComputerUseError.stateUnavailable(applicationWindowTimeoutMessage) }
+        let timeoutResult = AXUIElementSetMessagingTimeout(element, Float(min(0.05, remaining)))
+        guard timeoutResult == .success else {
+            throw ComputerUseError.stateUnavailable("Cannot bound startup window probe: \(timeoutResult.rawValue)")
+        }
+        var value: CFTypeRef?
+        let result = AXUIElementCopyAttributeValue(element, attribute as CFString, &value)
+        switch result {
+        case .success: return value
+        case .noValue, .attributeUnsupported, .invalidUIElement, .cannotComplete: return nil
+        case .apiDisabled:
+            throw ComputerUseError.permissionDenied("Accessibility permission is required.")
+        default:
+            throw ComputerUseError.stateUnavailable("Startup window probe failed: \(result.rawValue)")
+        }
+    }
+}
+
 private struct WindowCapture {
     let windowID: CGWindowID
     let layer: Int
@@ -519,7 +574,7 @@ private struct WindowCapture {
     var imageConfig = ImageCaptureConfig.defaults
 
     /// Exact binding: the window the AX tree was walked from.
-    static func resolve(for pid: pid_t, exactWindowID: CGWindowID?) -> WindowCapture? {
+    static func resolve(for pid: pid_t, exactWindowID: CGWindowID?, includeImage: Bool = true) -> WindowCapture? {
         guard let exactWindowID,
               let infoList = CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]]
         else {
@@ -536,20 +591,20 @@ private struct WindowCapture {
                 continue
             }
             let config = ImageCaptureConfig.current
-            return WindowCapture(windowID: exactWindowID, layer: layer, bounds: bounds, image: captureImage(windowID: exactWindowID, bounds: bounds, config: config), imageConfig: config)
+            return WindowCapture(windowID: exactWindowID, layer: layer, bounds: bounds, image: includeImage ? captureImage(windowID: exactWindowID, bounds: bounds, config: config) : nil, imageConfig: config)
         }
         return nil
     }
 
-    static func resolve(for pid: pid_t, titleHint: String?) -> WindowCapture? {
+    static func resolve(for pid: pid_t, titleHint: String?, includeImage: Bool = true) -> WindowCapture? {
         // On-screen windows first (front-to-back order is meaningful there);
         // fall back to every window of the pid so a window on another Space
         // still resolves instead of triggering the activate-and-raise recovery.
-        resolve(for: pid, titleHint: titleHint, options: [.optionOnScreenOnly])
-            ?? resolve(for: pid, titleHint: titleHint, options: [.optionAll])
+        resolve(for: pid, titleHint: titleHint, options: [.optionOnScreenOnly], includeImage: includeImage)
+            ?? resolve(for: pid, titleHint: titleHint, options: [.optionAll], includeImage: includeImage)
     }
 
-    private static func resolve(for pid: pid_t, titleHint: String?, options: CGWindowListOption) -> WindowCapture? {
+    private static func resolve(for pid: pid_t, titleHint: String?, options: CGWindowListOption, includeImage: Bool) -> WindowCapture? {
         guard let infoList = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] else {
             return nil
         }
@@ -583,7 +638,7 @@ private struct WindowCapture {
         }
 
         let config = ImageCaptureConfig.current
-        let image = captureImage(windowID: best.windowID, bounds: best.bounds, config: config)
+        let image = includeImage ? captureImage(windowID: best.windowID, bounds: best.bounds, config: config) : nil
 
         return WindowCapture(windowID: best.windowID, layer: best.layer, bounds: best.bounds, image: image, imageConfig: config)
     }

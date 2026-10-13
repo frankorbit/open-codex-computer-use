@@ -42,6 +42,8 @@ struct SnapshotDependencies {
     var processIdentity: (pid_t) -> SnapshotProcessIdentity? = SnapshotProcessIdentity.current
     var bindingIdentity: (RunningAppDescriptor) -> SnapshotProcessIdentity? = SnapshotProcessIdentity.bound
     var prepareOpen: (String) throws -> ApplicationOpeningRequest = AppDiscovery.prepareOpen
+    var openingWindowWait = ApplicationWindowWait()
+    var openingWindowReady: (RunningAppDescriptor, TimeInterval) throws -> Bool = SnapshotBuilder.openingWindowReady
     var captureHoverPopups: (AppSnapshot, HoverPopupObservationMode) -> HoverPopupCaptureResult
         = HoverPopupObservation.capture
     var parkWindow: (CGWindowID, pid_t, AXUIElement) throws -> Void = { windowID, pid, window in
