@@ -31,6 +31,17 @@ final class LiveWindowPreview: NSObject {
     private var windowBounds: CGRect?
     private var observingReopen = false
     private var inputActive = false
+    private lazy var keyboardPresentation: LivePreviewKeyboardPresentation =
+        LivePreviewKeyboardPresentation { [weak self] in
+            guard let self else { return }
+            view.keyboardInputVisible = keyboardPresentation.isVisible
+            if !keyboardPresentation.isHoldingFrames { render() }
+        }
+
+    private lazy var frameGrace: LivePreviewFrameGrace = LivePreviewFrameGrace { [weak self] in
+        self?.clear("等待窗口完整画面")
+    }
+
     private var captureFailed = false
     private var targetApp: NSRunningApplication?
 
@@ -99,6 +110,7 @@ final class LiveWindowPreview: NSObject {
     }
 
     private func hide() {
+        keyboardPresentation.reset()
         state.hide()
         panel?.orderOut(nil)
         clear("画中画已收起")
@@ -106,6 +118,7 @@ final class LiveWindowPreview: NSObject {
     }
 
     func reset() {
+        keyboardPresentation.reset()
         state.reset()
         restart()
         clear("镜像已结束")
@@ -118,15 +131,32 @@ final class LiveWindowPreview: NSObject {
         }
     }
 
-    nonisolated static func setInputActive(_ active: Bool) {
+    nonisolated static func setInputActive(_ active: Bool, keyboard: Bool = false) {
         guard livePreviewEnabled(environment: ProcessInfo.processInfo.environment) else {
             return
         }
         VisualCursorSupport.performOnMain {
             shared.inputActive = active
+            if active {
+                if keyboard {
+                    // 隐藏上一次点击的虚拟光标，不移动真实鼠标。
+                    SoftwareCursorOverlay.reset()
+                }
+                shared.keyboardPresentation.beginInput(keyboard: keyboard)
+            } else if keyboard {
+                shared.keyboardPresentation.endKeyboardInput()
+            }
             // 展示窗口不能挡住前台点击的真实接收者；空闲时仍可拖动或收起。
             if active { shared.view.cancelInteraction() }
             shared.panel?.ignoresMouseEvents = active
+        }
+    }
+
+    /// 只合并本地展示帧；不延长合成焦点、不改变输入或模型截图。
+    nonisolated static func setKeyboardFocusActive(_ active: Bool) {
+        guard livePreviewEnabled(environment: ProcessInfo.processInfo.environment) else { return }
+        VisualCursorSupport.performOnMain {
+            shared.keyboardPresentation.setFocusActive(active)
         }
     }
 
@@ -178,16 +208,7 @@ final class LiveWindowPreview: NSObject {
         else {
             throw PreviewCaptureError.targetUnavailable
         }
-        let config = LivePreviewCapture.configuration(for: window.frame.size)
-        // 只镜像已绑定窗口，即使被其他 App 遮住也不把遮挡者的内容带入预览。
-        let events = AsyncStream<PreviewFrameEvent>.makeStream(bufferingPolicy: .bufferingNewest(1))
-        let sink = PreviewFrameSink(continuation: events.continuation)
-        let stream = SCStream(
-            filter: SCContentFilter(desktopIndependentWindow: window),
-            configuration: config,
-            delegate: sink
-        )
-        try stream.addStreamOutput(sink, type: .screen, sampleHandlerQueue: DispatchQueue(label: "ocu.preview.frames"))
+        let (stream, events) = try LivePreviewCapture.makeStream(for: window)
         do {
             try await stream.startCapture()
             guard !Task.isCancelled, state.accepts(generation) else {
@@ -197,26 +218,33 @@ final class LiveWindowPreview: NSObject {
             capture = stream
             windowBounds = window.frame
             monitorTarget(target, app: app, size: window.frame.size, generation: generation)
-            for await event in events.stream {
+            for await event in events {
                 guard !Task.isCancelled, state.accepts(generation) else {
                     break
                 }
-                switch event {
-                case let .frame(image):
-                    receive(image, target: target, captureSize: window.frame.size)
-                case .unavailable:
-                    clear("等待窗口完整画面")
-                case .stopped:
-                    clear("窗口镜像已停止")
-                    captureFailed = true
-                case .stoppedByUser:
-                    clear("窗口共享已停止")
-                    notifyUserStopped()
-                }
+                receive(event, target: target, captureSize: window.frame.size)
             }
         } catch {
             await Self.stopCapture(stream)
             throw error
+        }
+    }
+
+    private func receive(_ event: PreviewFrameEvent, target: LivePreviewTarget, captureSize: CGSize) {
+        switch event {
+        case let .frame(image):
+            frameGrace.cancel()
+            receive(image, target: target, captureSize: captureSize)
+        case .transient:
+            frameGrace.waitForCompleteFrame()
+        case .unavailable:
+            clear("等待窗口完整画面")
+        case .stopped:
+            clear("窗口镜像已停止")
+            captureFailed = true
+        case .stoppedByUser:
+            clear("窗口共享已停止")
+            notifyUserStopped()
         }
     }
 
@@ -310,7 +338,7 @@ extension LiveWindowPreview {
     }
 
     private func render() {
-        guard let rootImage, let windowBounds else { return }
+        guard !keyboardPresentation.isHoldingFrames, let rootImage, let windowBounds else { return }
         // 只有 root 新帧、弹层新图或失效时重绘；idle 不做逐帧 AX/截图。
         popupState.observe(popupState.windows, now: ProcessInfo.processInfo.systemUptime)
         let layers = popupState.layers
@@ -335,6 +363,7 @@ extension LiveWindowPreview {
     }
 
     private func clear(_ message: String) {
+        frameGrace.cancel()
         popupWorker?.cancel()
         popupWorker = nil
         popupState.reset()
@@ -348,7 +377,7 @@ extension LiveWindowPreview {
     }
 
     func cursor(tip: CGPoint?, windowID: CGWindowID?, state cursorState: SoftwareCursorGlyphRenderState?) {
-        guard let tip, windowID == state.target?.windowID, let bounds = canvasBounds,
+        guard !view.keyboardInputVisible, let tip, windowID == state.target?.windowID, let bounds = canvasBounds,
               let screen = NSScreen.screens.first, !state.hidden, view.image != nil
         else {
             view.cursorState = nil

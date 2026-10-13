@@ -279,6 +279,8 @@ enum SkyKeyboardDispatcher {
     private static func deliverInBackground(
         to target: SkyKeyboardTarget, backend: SkyKeyboardDeliveryBackend, _ body: (() throws -> Void) throws -> Void,
     ) throws {
+        LiveWindowPreview.setKeyboardFocusActive(true)
+        defer { LiveWindowPreview.setKeyboardFocusActive(false) }
         InputDiagnostics.event("keyboard_route_selected", ["route": "sky_key"])
         let start = TimingLog.now()
         InputDiagnostics.desktopState("keyboard_before_synthetic_focus")

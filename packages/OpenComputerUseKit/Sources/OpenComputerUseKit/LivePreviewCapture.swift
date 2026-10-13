@@ -1,4 +1,5 @@
 import CoreImage
+import OSLog
 import ScreenCaptureKit
 
 enum LivePreviewCapture {
@@ -26,6 +27,19 @@ enum LivePreviewCapture {
         return config
     }
 
+    static func makeStream(for window: SCWindow) throws -> (SCStream, AsyncStream<PreviewFrameEvent>) {
+        // 只镜像已绑定窗口，即使被其他 App 遮住也不把遮挡者的内容带入预览。
+        let events = AsyncStream<PreviewFrameEvent>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        let sink = PreviewFrameSink(continuation: events.continuation)
+        let stream = SCStream(
+            filter: SCContentFilter(desktopIndependentWindow: window),
+            configuration: configuration(for: window.frame.size),
+            delegate: sink
+        )
+        try stream.addStreamOutput(sink, type: .screen, sampleHandlerQueue: DispatchQueue(label: "ocu.preview.frames"))
+        return (stream, events.stream)
+    }
+
     static func currentBounds(
         _ target: LivePreviewTarget,
         readWindowInfo: (CGWindowListOption, CGWindowID) -> [[String: Any]]? = {
@@ -50,6 +64,7 @@ enum LivePreviewCapture {
 
 enum PreviewFrameEvent {
     case frame(CGImage)
+    case transient
     case unavailable
     case stopped
     case stoppedByUser
@@ -88,14 +103,40 @@ final class PreviewFrameSink: NSObject, SCStreamOutput, SCStreamDelegate, Sendab
         }
         lock.lock()
         defer { lock.unlock() }
-        guard status == SCFrameStatus.complete.rawValue, let buffer = sample.imageBuffer,
+        switch Self.disposition(for: status) {
+        case .ignore: return
+        case .transient:
+            Logger(subsystem: "ai.today.ocu", category: "preview").debug("capture_frame_transient status=\(status)")
+            continuation.yield(.transient)
+            return
+        case .unavailable:
+            Logger(subsystem: "ai.today.ocu", category: "preview").debug("capture_frame_unavailable status=\(status)")
+            continuation.yield(.unavailable)
+            return
+        case .decode: break
+        }
+        guard let buffer = sample.imageBuffer,
               let image = context.createCGImage(CIImage(cvPixelBuffer: buffer), from: CGRect(
                   x: 0, y: 0, width: CVPixelBufferGetWidth(buffer), height: CVPixelBufferGetHeight(buffer)
               ))
         else {
-            continuation.yield(.unavailable)
+            continuation.yield(.transient)
             return
         }
         continuation.yield(.frame(image))
+    }
+
+    enum Disposition {
+        case ignore, decode, transient, unavailable
+    }
+
+    static func disposition(for status: Int) -> Disposition {
+        switch SCFrameStatus(rawValue: status) {
+        case .idle: .ignore
+        case .complete: .decode
+        case .started: .transient
+        // 空白、挂起、停止及未知状态立即撤掉旧画面，不掩盖共享停止。
+        default: .unavailable
+        }
     }
 }

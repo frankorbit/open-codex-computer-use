@@ -20,6 +20,17 @@ final class LivePreviewView: NSView {
         didSet { needsDisplay = true }
     }
 
+    var keyboardInputVisible = false {
+        didSet {
+            if keyboardInputVisible {
+                cursorPoint = nil
+                cursorState = nil
+            }
+            setAccessibilityValue(keyboardInputVisible ? "键盘输入中" : nil)
+            needsDisplay = true
+        }
+    }
+
     var sourceSize: CGSize = .zero
     var cursorPoint: CGPoint?
     var cursorState: SoftwareCursorGlyphRenderState?
@@ -118,7 +129,8 @@ final class LivePreviewView: NSView {
 
     private func refreshHoverCursor() {
         guard let window, window.isVisible, !window.ignoresMouseEvents,
-              let hoverCursor, cursorAccess.isActive else {
+              let hoverCursor, cursorAccess.isActive
+        else {
             clearHoverCursor()
             return
         }
@@ -126,7 +138,8 @@ final class LivePreviewView: NSView {
         // 不覆盖其他窗口、菜单或鼠标已离开后的光标；拖拽时允许越过边界。
         if resizeGesture == nil {
             guard NSWindow.windowNumber(at: point, belowWindowWithWindowNumber: 0) == window.windowNumber,
-                  bounds.contains(convert(window.convertPoint(fromScreen: point), from: nil)) else {
+                  bounds.contains(convert(window.convertPoint(fromScreen: point), from: nil))
+            else {
                 clearHoverCursor()
                 return
             }
@@ -208,6 +221,7 @@ final class LivePreviewView: NSView {
     }
 
     override func draw(_: NSRect) {
+        defer { drawKeyboardBadge() }
         // 透明源像素和首帧加载阶段使用黑色底衬；比例由 panel 统一约束。
         NSColor.black.setFill()
         bounds.fill(using: .copy)
@@ -220,7 +234,9 @@ final class LivePreviewView: NSView {
         // AppKit 会取整到显示像素，直接填满内容区消除重复 aspect-fit 的细缝。
         let destination = bounds
         context.draw(image, in: destination)
-        guard let cursorPoint, let cursorState, sourceSize.width > 0, sourceSize.height > 0 else {
+        guard !keyboardInputVisible, let cursorPoint, let cursorState, sourceSize.width > 0,
+              sourceSize.height > 0
+        else {
             return
         }
         let scaleX = destination.width / sourceSize.width
@@ -239,5 +255,31 @@ final class LivePreviewView: NSView {
             state: cursorState
         )
         context.restoreGState()
+    }
+
+    private func drawKeyboardBadge() {
+        guard keyboardInputVisible else { return }
+        // 固定尺寸的静态提示，不改变镜像比例，不把提示烧进模型截图。
+        let label = "键盘输入中" as NSString
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 12, weight: .medium),
+            .foregroundColor: NSColor.white
+        ]
+        let textSize = label.size(withAttributes: attributes)
+        guard bounds.width >= 44, bounds.height >= 34 else { return }
+        let showLabel = textSize.width + 58 <= bounds.width
+        let width = showLabel ? textSize.width + 42 : 36
+        let originX = bounds.midX - width / 2
+        // 窄窗口下让开左上角收起按钮；极窄窗口只保留图标和完整 AX 提示。
+        let topInset: CGFloat = originX < 38 ? 38 : 10
+        let pill = CGRect(x: originX, y: max(4, bounds.maxY - topInset - 26), width: width, height: 26)
+        NSColor(calibratedWhite: 0.12, alpha: 0.92).setFill()
+        NSBezierPath(roundedRect: pill, xRadius: 13, yRadius: 13).fill()
+        let icon = NSImage(systemSymbolName: "keyboard", accessibilityDescription: nil)?
+            .withSymbolConfiguration(.init(paletteColors: [.white]))
+        icon?.draw(in: CGRect(x: pill.minX + 10, y: pill.minY + 6, width: 17, height: 14))
+        if showLabel {
+            label.draw(at: CGPoint(x: pill.minX + 32, y: pill.midY - textSize.height / 2), withAttributes: attributes)
+        }
     }
 }

@@ -108,8 +108,9 @@ public final class ComputerUseToolDispatcher {
         if name == "hover", case .observation = try HoverRequest(arguments: arguments).target {
             input = false
         }
-        if input { LiveWindowPreview.setInputActive(true) }
-        defer { if input { LiveWindowPreview.setInputActive(false) } }
+        let keyboard = ["type_text", "press_key", "paste_text"].contains(name)
+        if input { LiveWindowPreview.setInputActive(true, keyboard: keyboard) }
+        defer { if input { LiveWindowPreview.setInputActive(false, keyboard: keyboard) } }
         switch name {
         case "list_apps":
             return service.listApps()
