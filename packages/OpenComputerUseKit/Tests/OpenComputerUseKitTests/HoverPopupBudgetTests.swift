@@ -77,9 +77,9 @@ final class HoverPopupBudgetTests: XCTestCase {
                         if blockAX { entered.signal(); release.wait() }
                         return .init(windows: [])
                     },
-                    captureImage: { _ in
+                    captureImage: { window in
                         if !blockAX { entered.signal(); release.wait() }
-                        return data
+                        return .init(data: data, captureBounds: window.bounds)
                     }
                 ))
             }
@@ -114,10 +114,10 @@ final class HoverPopupBudgetTests: XCTestCase {
         let result = collector(budget: budget).capture(dependencies: .init(
             readWindows: { [self.popup, second, third, self.root] },
             readAX: { .init(windows: []) },
-            captureImage: { _ in
+            captureImage: { window in
                 captures += 1
                 if captures == 2 { Thread.sleep(forTimeInterval: 0.08) }
-                return data
+                return .init(data: data, captureBounds: window.bounds)
             }
         ))
         XCTAssertEqual(captures, 2)
@@ -133,7 +133,8 @@ final class HoverPopupBudgetTests: XCTestCase {
         let result = worker.capture(budget: budget) {
             collector.capture(dependencies: .init(
                 readWindows: { [self.popup, self.root] },
-                readAX: { .init(windows: []) }, captureImage: { _ in data }
+                readAX: { .init(windows: []) },
+                captureImage: { window in .init(data: data, captureBounds: window.bounds) }
             ))
         }
         XCTAssertFalse(result.isIncomplete)

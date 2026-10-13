@@ -510,7 +510,7 @@ public final class ComputerUseService {
 
     init(snapshots: [String: AppSnapshot] = [:], snapshotDependencies: SnapshotDependencies, allowsForegroundClickOnce: Bool = false) {
         self.allowsForegroundClickOnce = allowsForegroundClickOnce
-        snapshotCache = AppSnapshotCache(snapshots: snapshots)
+        snapshotCache = AppSnapshotCache(snapshots: snapshots, bindingIdentity: snapshotDependencies.bindingIdentity)
         coordinateClickBackend = nil
         self.snapshotDependencies = snapshotDependencies
     }
@@ -548,7 +548,7 @@ public final class ComputerUseService {
         // 只读弹层观察不依赖前台输入授权；真实 hover 必须在读取快照前拒绝。
         switch request.target {
         case .observation:
-            break
+            return try readOnlyPopupObservationResult(for: query)
         case .element, .coordinates:
             try policy.requireForeground("Hover")
             guard foregroundHoverEnabled(environment: ProcessInfo.processInfo.environment) else {
@@ -557,10 +557,6 @@ public final class ComputerUseService {
         }
         let snapshot = try currentSnapshot(for: query)
         do {
-            if case .observation = request.target {
-                // 已打开的弹层只读采集，不能先激活主窗口或发送鼠标事件。
-                return try popupObservationResult(for: query)
-            }
             let target = try hoverTarget(request, snapshot: snapshot)
             let point = target.point
             return try dispatchForegroundHover(
@@ -596,6 +592,42 @@ public final class ComputerUseService {
             )
         } catch {
             snapshotCache.invalidate(query: query, resolvedApp: snapshot.app)
+            LiveWindowPreview.invalidate()
+            throw error
+        }
+    }
+
+    private func readOnlyPopupObservationResult(for query: String) throws -> ToolCallResult {
+        hoverPopupCache.clear()
+        foregroundObservation = nil
+        do {
+            let app: RunningAppDescriptor
+            var recoveryBinding: SnapshotObservationBinding?
+            do {
+                // 正常观察沿用已绑定身份，避免同名应用让目标悄然改变。
+                app = try snapshotCache.snapshot(for: query).app
+            } catch ComputerUseError.stateUnavailable {
+                recoveryBinding = snapshotCache.observationBinding(for: query)
+                if let recoveryBinding {
+                    app = recoveryBinding.app
+                } else {
+                    // 仅从未绑定的查询允许解析；失败恢复不能借同名或重启切换进程。
+                    app = try snapshotDependencies.resolve(query)
+                }
+            }
+            snapshotCache.invalidate(query: query, resolvedApp: recoveryBinding == nil ? app : nil)
+            let fresh = try observeWithoutActivation {
+                // 恢复的每次尝试前后复核 PID 与启动时间；退出或 PID 复用均拒绝。
+                try recoveryBinding?.validate(current: snapshotDependencies.processIdentity(app.pid))
+                let snapshot = try snapshotDependencies.build(app, .defaults, .defaults, .readOnly)
+                try recoveryBinding?.validate(current: snapshotDependencies.processIdentity(app.pid))
+                return snapshot
+            }
+            // 新索引仅在完整主快照成功后生效；不恢复旧 token 或单次前台资格。
+            snapshotCache.recordObservation(fresh, for: query)
+            return snapshotResult(for: fresh, style: .fullState, reportMissingPopups: true)
+        } catch {
+            snapshotCache.invalidate(query: query)
             LiveWindowPreview.invalidate()
             throw error
         }

@@ -1,10 +1,46 @@
+import AppKit
 import ApplicationServices
 import Foundation
+
+struct SnapshotProcessIdentity: Equatable {
+    let pid: pid_t
+    let launchDate: Date
+
+    static func current(for pid: pid_t) -> Self? {
+        guard let app = NSRunningApplication(processIdentifier: pid),
+              !app.isTerminated, let launchDate = app.launchDate else { return nil }
+        return Self(pid: pid, launchDate: launchDate)
+    }
+
+    static func bound(to app: RunningAppDescriptor) -> Self? {
+        // 绑定证据来自原 descriptor，不能按 PID 重查后误绑定到复用该 PID 的新进程。
+        guard app.runningApplication.processIdentifier == app.pid,
+              !app.runningApplication.isTerminated,
+              let launchDate = app.runningApplication.launchDate else { return nil }
+        return Self(pid: app.pid, launchDate: launchDate)
+    }
+}
+
+struct SnapshotObservationBinding {
+    let app: RunningAppDescriptor
+    let processIdentity: SnapshotProcessIdentity?
+
+    func validate(current: SnapshotProcessIdentity?) throws {
+        guard let processIdentity, processIdentity.pid == app.pid, current == processIdentity else {
+            throw ComputerUseError.stateUnavailable(
+                "Bound app process is unavailable or changed. "
+                    + "Run get_app_state to explicitly rebind; no input was sent."
+            )
+        }
+    }
+}
 
 struct SnapshotDependencies {
     var resolve: (String) throws -> RunningAppDescriptor
     var build: (RunningAppDescriptor, SnapshotTextLimit, AccessibilityTreeLimits, SnapshotRecoveryPolicy) throws
         -> AppSnapshot
+    var processIdentity: (pid_t) -> SnapshotProcessIdentity? = SnapshotProcessIdentity.current
+    var bindingIdentity: (RunningAppDescriptor) -> SnapshotProcessIdentity? = SnapshotProcessIdentity.bound
     var prepareOpen: (String) throws -> ApplicationOpeningRequest = AppDiscovery.prepareOpen
     var captureHoverPopups: (AppSnapshot, HoverPopupObservationMode) -> HoverPopupCaptureResult
         = HoverPopupObservation.capture
@@ -50,9 +86,16 @@ struct AppSnapshotCache {
 
     private var targetsByAlias: [String: Target] = [:]
     private var snapshotsByTarget: [Target: AppSnapshot] = [:]
+    // 只保留进程绑定证据；失效快照的 AX 对象、图片与输入索引不保留。
+    private var observationBindingsByTarget: [Target: SnapshotObservationBinding] = [:]
     private var pendingInitializations: Set<ApplicationOpeningIdentity> = []
+    private let bindingIdentity: (RunningAppDescriptor) -> SnapshotProcessIdentity?
 
-    init(snapshots: [String: AppSnapshot] = [:]) {
+    init(
+        snapshots: [String: AppSnapshot] = [:],
+        bindingIdentity: @escaping (RunningAppDescriptor) -> SnapshotProcessIdentity? = SnapshotProcessIdentity.bound
+    ) {
+        self.bindingIdentity = bindingIdentity
         for (query, snapshot) in snapshots.sorted(by: { $0.key < $1.key }) {
             recordObservation(snapshot, for: query)
         }
@@ -63,6 +106,11 @@ struct AppSnapshotCache {
             throw ComputerUseError.stateUnavailable(Self.observationRequiredMessage)
         }
         return snapshot
+    }
+
+    func observationBinding(for query: String) -> SnapshotObservationBinding? {
+        guard let target = targetsByAlias[Self.normalized(query)] else { return nil }
+        return observationBindingsByTarget[target]
     }
 
     mutating func recordObservation(_ snapshot: AppSnapshot, for query: String) {
@@ -108,6 +156,9 @@ struct AppSnapshotCache {
     private mutating func bind(_ query: String, to app: RunningAppDescriptor) -> Target {
         let target = Target(app)
         targetsByAlias[Self.normalized(query)] = target
+        observationBindingsByTarget[target] = SnapshotObservationBinding(
+            app: app, processIdentity: bindingIdentity(app)
+        )
         for alias in [app.name, app.bundleIdentifier ?? ""].map(Self.normalized) where !alias.isEmpty {
             // 同名 App 不覆盖已知映射；只有显式解析的 query 可以重新绑定。
             if targetsByAlias[alias] == nil {

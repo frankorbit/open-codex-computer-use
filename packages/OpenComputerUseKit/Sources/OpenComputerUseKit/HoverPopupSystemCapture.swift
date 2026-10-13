@@ -47,7 +47,8 @@ struct HoverPopupSystemCapture {
     let settings: Observation.CaptureSettings
 
     func capture() -> HoverPopupCaptureResult {
-        capture(dependencies: .init(
+        let windowCapture = HoverPopupWindowCapture()
+        return capture(dependencies: .init(
             readWindows: {
                 guard !application.isTerminated, !application.isHidden,
                       let info = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID)
@@ -56,8 +57,10 @@ struct HoverPopupSystemCapture {
             },
             readAX: { readAXState() },
             captureImage: { window in
-                guard !budget.expired, let image = try captureImage(window), !budget.expired else { return nil }
-                return encodeScreenshot(for: image, config: settings.config).data
+                guard !budget.expired, let captured = try captureImage(window, windowCapture: windowCapture),
+                      !budget.expired,
+                      let data = encodeScreenshot(for: captured.image, config: settings.config).data else { return nil }
+                return Observation.CapturedImage(data: data, captureBounds: captured.bounds)
             }
         ))
     }
@@ -65,7 +68,7 @@ struct HoverPopupSystemCapture {
     struct Dependencies {
         var readWindows: () -> [Observation.Window]?
         var readAX: () -> Observation.State?
-        var captureImage: (Observation.Window) throws -> Data?
+        var captureImage: (Observation.Window) throws -> Observation.CapturedImage?
     }
 
     func capture(dependencies: Dependencies) -> HoverPopupCaptureResult {
@@ -185,29 +188,25 @@ struct HoverPopupSystemCapture {
         return Observation.validBounds(rectangle) ? rectangle : nil
     }
 
-    private func captureImage(_ window: Observation.Window) throws -> CGImage? {
-        if let image = SkyLightSPI.shared.hardwareCaptureWindow(window.windowID) { return image }
+    private func captureImage(
+        _ window: Observation.Window, windowCapture: HoverPopupWindowCapture
+    ) throws -> (image: CGImage, bounds: CGRect?)? {
         guard !budget.expired else { return nil }
-        // 不让内部超时释放 single-flight 槽位：SCK 真正完成前 worker 仍占用槽位。
-        // 调用方由外层总预算退出；晚到结果不发布，也不会再开始下一张截图。
-        let budget = budget
-        return try BlockingAsyncBridge.run {
-            let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
-            guard !budget.expired,
-                  let target = content.windows.first(where: {
-                      $0.windowID == window.windowID && $0.owningApplication?.processID == window.pid
-                          && $0.frame == window.bounds
-                  }) else { return nil }
-            let configuration = SCStreamConfiguration()
-            guard let width = Int(exactly: ceil(window.bounds.width)),
-                  let height = Int(exactly: ceil(window.bounds.height)) else { return nil }
-            configuration.width = width
-            configuration.height = height
-            configuration.showsCursor = false
-            configuration.ignoreShadowsSingleWindow = true
-            return try await SCScreenshotManager.captureImage(
-                contentFilter: SCContentFilter(desktopIndependentWindow: target), configuration: configuration
-            )
+        do {
+            let budget = budget
+            if let image = try BlockingAsyncBridge.run({
+                try await windowCapture.capture(window, budget: budget)
+            }) {
+                return (image, window.bounds)
+            }
+        } catch {
+            // 单窗口采集失败仍可提供硬件图像，但后者没有区域元数据，不能用于点击。
+            guard !budget.expired else { throw error }
         }
+        guard !budget.expired, let image = SkyLightSPI.shared.hardwareCaptureWindow(window.windowID) else {
+            return nil
+        }
+        return (image, nil)
     }
+
 }

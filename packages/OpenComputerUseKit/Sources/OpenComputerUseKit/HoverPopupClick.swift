@@ -65,6 +65,8 @@ struct HoverPopupLease {
               let rootWindowID, rootWindowID != 0, rootWindowID != popup.windowID,
               let rootBounds, HoverPopupObservation.validBounds(rootBounds),
               popup.windowID != 0, popup.pid > 0, HoverPopupObservation.validBounds(popup.bounds),
+              let captureBounds = popup.captureBounds, HoverPopupObservation.validBounds(captureBounds),
+              popup.bounds.contains(captureBounds),
               snapshot.app.pid == popup.pid, snapshot.targetWindowID == rootWindowID,
               snapshot.windowBounds == rootBounds,
               popup.pixelSize.width.isFinite, popup.pixelSize.height.isFinite,
@@ -75,8 +77,8 @@ struct HoverPopupLease {
             throw ComputerUseError.stateUnavailable("Popup observation expired or target changed; observe again")
         }
         let result = CGPoint(
-            x: popup.bounds.minX + (point.x / popup.pixelSize.width) * popup.bounds.width,
-            y: popup.bounds.minY + (point.y / popup.pixelSize.height) * popup.bounds.height
+            x: captureBounds.minX + (point.x / popup.pixelSize.width) * captureBounds.width,
+            y: captureBounds.minY + (point.y / popup.pixelSize.height) * captureBounds.height
         )
         guard result.x.isFinite, result.y.isFinite, popup.bounds.contains(result) else {
             throw ComputerUseError.stateUnavailable("Popup coordinate is outside the observed window")

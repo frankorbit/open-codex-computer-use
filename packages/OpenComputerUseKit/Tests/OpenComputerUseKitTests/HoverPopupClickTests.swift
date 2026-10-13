@@ -35,6 +35,7 @@ struct HoverPopupClickTests {
             windowID: 2,
             pid: 11,
             bounds: CGRect(x: -300, y: 200, width: 200, height: 100),
+            captureBounds: CGRect(x: -300, y: 200, width: 200, height: 100),
             imageData: Data([1]),
             pixelSize: CGSize(width: 400, height: 200)
         )

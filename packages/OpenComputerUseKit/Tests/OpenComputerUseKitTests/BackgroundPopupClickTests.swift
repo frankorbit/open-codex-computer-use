@@ -36,7 +36,7 @@ final class BackgroundPopupClickTests: XCTestCase {
 
     private func popup() -> HoverPopupObservation {
         HoverPopupObservation(
-            token: token, windowID: 2, pid: 11, bounds: popupBounds,
+            token: token, windowID: 2, pid: 11, bounds: popupBounds, captureBounds: popupBounds,
             imageData: Data([1]), pixelSize: CGSize(width: 400, height: 200),
             permitsInput: false, permitsBackgroundInput: true
         )
@@ -241,7 +241,7 @@ extension BackgroundPopupClickTests {
     func testValidBackgroundDispatchSubmitsOnceAndConsumesSiblingTokens() throws {
         var cache = HoverPopupCache()
         let second = HoverPopupObservation(
-            token: UUID().uuidString, windowID: 3, pid: 11, bounds: popupBounds,
+            token: UUID().uuidString, windowID: 3, pid: 11, bounds: popupBounds, captureBounds: popupBounds,
             imageData: Data([1]), pixelSize: CGSize(width: 400, height: 200),
             permitsInput: false, permitsBackgroundInput: true
         )

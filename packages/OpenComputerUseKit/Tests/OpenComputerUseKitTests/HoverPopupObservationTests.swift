@@ -28,7 +28,9 @@ final class HoverPopupObservationTests: XCTestCase {
     ) -> [Observation] {
         Observation.capture(
             rootWindowID: root.windowID, pid: root.pid, rootBounds: root.bounds,
-            dependencies: .init(readState: state, captureImage: image)
+            dependencies: .init(readState: state, captureImage: { window in
+                try image(window).map { .init(data: $0, captureBounds: window.bounds) }
+            })
         )
     }
 
@@ -74,12 +76,12 @@ final class HoverPopupObservationTests: XCTestCase {
     func testPopupMetadataBelongsOnlyToItsImageAndPreservesMIME() throws {
         let data = try imageData()
         let first = Observation(
-            token: UUID().uuidString, windowID: 11, pid: 123, bounds: popup.bounds,
+            token: UUID().uuidString, windowID: 11, pid: 123, bounds: popup.bounds, captureBounds: popup.bounds,
             imageData: data, pixelSize: CGSize(width: 40, height: 20)
         )
         // 此测试只验证包装逻辑；JPEG 头用于确保不把原 MIME 强制改成 PNG。
         let second = Observation(
-            token: UUID().uuidString, windowID: 12, pid: 123, bounds: popup.bounds,
+            token: UUID().uuidString, windowID: 12, pid: 123, bounds: popup.bounds, captureBounds: popup.bounds,
             imageData: Data([0xFF, 0xD8, 0xFF]), pixelSize: CGSize(width: 40, height: 20)
         )
         let main = ToolResultContentItem.screenshotImage(data)
@@ -149,6 +151,28 @@ final class HoverPopupObservationTests: XCTestCase {
 }
 
 extension HoverPopupObservationTests {
+    func testCapturedRegionSurvivesEncodingAndUnknownRegionRemainsObservationOnly() throws {
+        let data = try imageData()
+        let cropped = CGRect(x: popup.bounds.minX + 20, y: popup.bounds.minY + 10, width: 100, height: 50)
+        for region: CGRect? in [cropped, nil] {
+            let observations = Observation.capture(
+                rootWindowID: root.windowID, pid: root.pid, rootBounds: root.bounds,
+                allowBackgroundInput: true,
+                dependencies: .init(
+                    readState: { State(windows: [self.popup, self.root]) },
+                    captureImage: { _ in .init(data: data, captureBounds: region) }
+                )
+            )
+            let observed = try XCTUnwrap(observations.first)
+            XCTAssertEqual(observed.bounds, popup.bounds)
+            XCTAssertEqual(observed.captureBounds, region)
+            XCTAssertEqual(observed.pixelSize, CGSize(width: 40, height: 20))
+            XCTAssertEqual(observed.imageData, data)
+            XCTAssertEqual(observed.clickMethod(policy: .background), region == nil ? nil : .skyClick)
+            XCTAssertEqual(observed.clickMethod(policy: .compatible), region == nil ? nil : .global)
+        }
+    }
+
     func testGeometryRequiresPositiveProjectionOverlapAndBoundedEdgeGap() {
         let bounds = CGRect(x: 0, y: 0, width: 100, height: 100)
         XCTAssertTrue(Observation.geometricallyRelated(CGRect(x: 100, y: 20, width: 50, height: 50), bounds))

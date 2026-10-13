@@ -29,7 +29,11 @@ final class StrictPopupReadOnlyTests: XCTestCase {
         super.tearDown()
     }
 
-    private func service(readBack: @escaping () throws -> Void, capture: @escaping () -> Void) -> ComputerUseService {
+    private func service(
+        processIdentity: ((pid_t) -> SnapshotProcessIdentity?)? = nil,
+        readBack: @escaping () throws -> Void,
+        capture: @escaping () -> Void
+    ) -> ComputerUseService {
         let snapshot = AppSnapshot(
             app: RunningAppDescriptor(
                 name: "popup",
@@ -44,19 +48,27 @@ final class StrictPopupReadOnlyTests: XCTestCase {
         )
         // 无 AXWindow、无元素；误入激活或指针路径无法成功返回弹层内容。
         return ComputerUseService(snapshots: ["test.popup": snapshot], snapshotDependencies: SnapshotDependencies(
-            resolve: { _ in XCTFail("must not resolve another target"); throw ComputerUseError.message("unexpected") },
-            build: { _, _, _, policy in
+            resolve: { _ in
+                XCTFail("must not resolve another target, including after invalidation")
+                throw ComputerUseError.message("unexpected")
+            },
+            build: { app, _, _, policy in
+                XCTAssertEqual(app.pid, snapshot.app.pid)
+                XCTAssertEqual(app.bundleIdentifier, snapshot.app.bundleIdentifier)
                 XCTAssertEqual(policy, .readOnly)
                 try readBack()
                 return snapshot
             },
+            processIdentity: processIdentity ?? popupTestProcessIdentity,
+            bindingIdentity: popupTestBindingIdentity,
             prepareOpen: { _ in XCTFail("must not open"); throw ComputerUseError.message("unexpected") },
             captureHoverPopups: { _, mode in
                 XCTAssertEqual(mode, .explicit)
                 capture()
                 return .init(popups: [HoverPopupObservation(
-                    token: "read-only-popup", windowID: 2, pid: 11,
+                    token: "read-only-popup", windowID: 2, pid: snapshot.app.pid,
                     bounds: CGRect(x: 100, y: 100, width: 100, height: 100),
+                    captureBounds: CGRect(x: 100, y: 100, width: 100, height: 100),
                     imageData: Data([1]), pixelSize: CGSize(width: 100, height: 100)
                 )])
             }
@@ -120,16 +132,104 @@ final class StrictPopupReadOnlyTests: XCTestCase {
         }
     }
 
-    func testReadOnlyFailureInvalidatesSnapshotWithoutRetryOrCapture() {
+    func testReadOnlyFailureInvalidatesSnapshotAndNextExplicitObservationRebuilds() {
         var builds = 0
-        let service = service(readBack: { builds += 1; throw ComputerUseError.message("read failed") },
-                              capture: { XCTFail("unexpected capture") })
+        let service = service(
+            readBack: { builds += 1; throw ComputerUseError.message("read failed") },
+            capture: { XCTFail("unexpected capture") }
+        )
         let dispatcher = ComputerUseToolDispatcher(service: service)
-        for _ in 0 ..< 2 {
+        for attempt in 1 ... 2 {
             XCTAssertThrowsError(try dispatcher.callTool(
                 name: "hover", arguments: ["app": "test.popup", "observe_only": true]
-            ))
+            )) {
+                XCTAssertTrue($0.localizedDescription.contains("read failed"))
+            }
+            // 非无窗口错误不在同一调用内重试；下一次显式观察仅重建原进程快照。
+            XCTAssertEqual(builds, attempt)
+            XCTAssertThrowsError(try service.setValue(app: "test.popup", elementIndex: "1", value: "unused")) {
+                XCTAssertTrue($0.localizedDescription.contains(AppSnapshotCache.observationRequiredMessage))
+            }
         }
-        XCTAssertEqual(builds, 1)
+    }
+
+    func testRecoveryFailureLeavesAllAliasesInvalidAndDoesNotOpen() {
+        for processMissing in [false, true] {
+            var builds = 0
+            let service = service(
+                processIdentity: { pid in processMissing ? nil : popupTestProcessIdentity(for: pid) },
+                readBack: { builds += 1; throw ComputerUseError.message("observation failed") },
+                capture: { XCTFail("A failed main snapshot cannot issue popup evidence") }
+            )
+            for _ in 0 ..< 2 {
+                XCTAssertThrowsError(try service.hover(app: "test.popup", arguments: ["observe_only": true]))
+                for alias in ["test.popup", "popup"] {
+                    XCTAssertThrowsError(try service.setValue(app: alias, elementIndex: "1", value: "unused")) {
+                        XCTAssertTrue($0.localizedDescription.contains(AppSnapshotCache.observationRequiredMessage))
+                    }
+                }
+                XCTAssertNil(service.takeForegroundObservation())
+            }
+            XCTAssertEqual(builds, processMissing ? 1 : 2)
+        }
+    }
+
+    func testRecoveryRejectsExitedOrReusedProcessBeforeBuild() throws {
+        let original = try XCTUnwrap(
+            popupTestProcessIdentity(for: 11)
+        )
+        let replacements: [SnapshotProcessIdentity?] = [
+            nil,
+            .init(pid: original.pid, launchDate: original.launchDate.addingTimeInterval(1)),
+            .init(pid: original.pid + 1, launchDate: original.launchDate)
+        ]
+        for replacement in replacements {
+            var builds = 0
+            let service = service(
+                processIdentity: { pid in
+                    XCTAssertEqual(pid, original.pid)
+                    return replacement
+                },
+                readBack: { builds += 1; throw ComputerUseError.message("initial failure") },
+                capture: { XCTFail("Failed recovery must not capture or issue a token") }
+            )
+            XCTAssertThrowsError(try service.hover(app: "test.popup", arguments: ["observe_only": true]))
+            for alias in ["popup", " TEST.POPUP "] {
+                XCTAssertThrowsError(try service.hover(app: alias, arguments: ["observe_only": true])) {
+                    XCTAssertTrue($0.localizedDescription.contains("explicitly rebind"))
+                }
+                XCTAssertThrowsError(try service.setValue(app: alias, elementIndex: "1", value: "unused")) {
+                    XCTAssertTrue($0.localizedDescription.contains(AppSnapshotCache.observationRequiredMessage))
+                }
+            }
+            XCTAssertEqual(builds, 1)
+            XCTAssertNil(service.takeForegroundObservation())
+        }
+    }
+
+    func testProcessExitDuringRecoveryDoesNotPublishIntermediateSnapshot() throws {
+        var current = try XCTUnwrap(
+            popupTestProcessIdentity(for: 11)
+        )
+        var builds = 0
+        var validations = 0
+        let service = service(
+            processIdentity: { _ in validations += 1; return current },
+            readBack: {
+                builds += 1
+                if builds == 1 { throw ComputerUseError.message("initial failure") }
+                current = .init(pid: current.pid, launchDate: current.launchDate.addingTimeInterval(1))
+            },
+            capture: { XCTFail("A changed process cannot publish the intermediate snapshot") }
+        )
+        XCTAssertThrowsError(try service.hover(app: "test.popup", arguments: ["observe_only": true]))
+        XCTAssertThrowsError(try service.hover(app: "test.popup", arguments: ["observe_only": true])) {
+            XCTAssertTrue($0.localizedDescription.contains("explicitly rebind"))
+        }
+        XCTAssertEqual(builds, 2)
+        XCTAssertEqual(validations, 2)
+        XCTAssertThrowsError(try service.setValue(app: "popup", elementIndex: "1", value: "unused")) {
+            XCTAssertTrue($0.localizedDescription.contains(AppSnapshotCache.observationRequiredMessage))
+        }
     }
 }

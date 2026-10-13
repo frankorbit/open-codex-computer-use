@@ -266,15 +266,28 @@ enum SnapshotBuilder {
         let screenshotData = screenshot.data
         let focusedElement = preferredFocusedElement(appElement: appElement, appPID: app.pid, focusedApplication: focusedApplication, systemWide: systemWide)
         let selectedText = focusedElement.flatMap { copySelectedText($0, textLimit: textLimit) }
-        let context = RenderContext(
-            windowBounds: windowBounds,
-            focusedElement: focusedElement,
-            textLimit: textLimit,
-            treeLimits: treeLimits
-        )
+        func renderWindowAndActiveMenus() -> TreeRenderer {
+            let menuBar = copyElement(appElement, attribute: kAXMenuBarAttribute)
+            let activeMenus = captureActiveAXMenus(
+                pid: app.pid, windowID: windowCapture.windowID,
+                bounds: windowBounds, maximumNodes: treeLimits.maxNodeCount
+            )
+            let context = RenderContext(
+                windowBounds: windowBounds, focusedElement: focusedElement,
+                textLimit: textLimit, treeLimits: treeLimits, activeMenus: activeMenus
+            )
+            var result = TreeRenderer(context: context)
+            // discovery 预算不涵盖渲染；属性读取沿用普通 AX renderer，不修改共享 root timeout。
+            // 活动菜单优先，避免大型文档耗尽预算后只剩 selected menubar 而无菜单项。
+            for menu in activeMenus.roots {
+                result.render(menu)
+            }
+            result.render(rootElement)
+            if let menuBar, !CFEqual(menuBar, rootElement) { result.render(menuBar) }
+            return result
+        }
 
-        var renderer = TreeRenderer(context: context)
-        TimingLog.measure("snapshot.tree_walk") { renderer.render(rootElement) }
+        var renderer = TimingLog.measure("snapshot.tree_walk") { renderWindowAndActiveMenus() }
 
         // Pin the window's visible state (WindowServer occlusion notifications
         // off) so covering it or moving it to another Space later does not hide
@@ -285,25 +298,18 @@ enum SnapshotBuilder {
         // and drop it while hidden. Re-walk briefly while the window is visible;
         // when it is hidden, say so instead of waiting.
         var occlusionNote: String?
-        if lazyWebAccessibility, !renderer.hasWebArea {
+        if lazyWebAccessibility, !renderer.hasWebArea, renderer.context.activeMenus.roots.isEmpty {
             if pinned {
                 for _ in 0..<webAreaRewalkAttempts {
                     Thread.sleep(forTimeInterval: webAreaRewalkInterval)
-                    renderer = TreeRenderer(context: context)
-                    renderer.render(rootElement)
-                    if renderer.hasWebArea {
+                    renderer = renderWindowAndActiveMenus()
+                    if renderer.hasWebArea || !renderer.context.activeMenus.roots.isEmpty {
                         break
                     }
                 }
             } else {
                 occlusionNote = "Note: this window is covered or on another Space, so the app hides its web content and it is not in the tree. Bring the window into view once (covering it afterwards keeps working), or call get_app_state with window_placement=agent_display to park it on the agent's own display."
             }
-        }
-
-        if let menuBar = copyElement(appElement, attribute: kAXMenuBarAttribute),
-           !CFEqual(menuBar, rootElement)
-        {
-            renderer.render(menuBar)
         }
 
         var treeLines = renderer.lines
@@ -804,6 +810,7 @@ private struct RenderContext {
     let focusedElement: AXUIElement?
     let textLimit: SnapshotTextLimit
     let treeLimits: AccessibilityTreeLimits
+    let activeMenus: AXActiveMenuTree<AXUIElement>
 }
 
 private struct TreeRenderer {
@@ -814,6 +821,7 @@ private struct TreeRenderer {
     var records: [Int: ElementRecord] = [:]
     var identifierIndex: [String: String] = [:]
     var focusedSummary: String?
+    private var renderedMenuElements: [AXUIElement] = []
 
     init(context: RenderContext) {
         self.context = context
@@ -826,6 +834,10 @@ private struct TreeRenderer {
 
         guard !ancestors.contains(where: { CFEqual($0, root) }) else {
             return
+        }
+        if context.activeMenus.children(of: root, equal: { CFEqual($0, $1) }) != nil {
+            guard !renderedMenuElements.contains(where: { CFEqual($0, root) }) else { return }
+            renderedMenuElements.append(root)
         }
         let nextAncestors = ancestors + [root]
 
@@ -1063,6 +1075,11 @@ private struct TreeRenderer {
 
     private func children(of element: AXUIElement) -> [AXUIElement] {
         let role = stringValue(of: element, attribute: kAXRoleAttribute)
+        if let children = context.activeMenus.children(of: element, equal: { CFEqual($0, $1) }) {
+            // 仅活动树使用已验证的边；普通窗口内下拉/上下文菜单沿用原遍历。
+            return children
+        }
+        if role == kAXMenuBarItemRole as String { return [] }
         let rows = copyArray(element, attribute: kAXRowsAttribute) ?? []
         let visibleChildren = copyArray(element, attribute: axVisibleChildrenAttribute) ?? []
         let attributes = childTraversalAttributes(

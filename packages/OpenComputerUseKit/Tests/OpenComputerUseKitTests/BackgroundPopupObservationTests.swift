@@ -49,7 +49,9 @@ final class BackgroundPopupObservationTests: XCTestCase {
             rootWindowID: root.windowID, pid: root.pid, rootBounds: root.bounds,
             requireForeground: false, allowInput: allowInput,
             allowBackgroundInput: allowBackgroundInput,
-            dependencies: .init(readState: readState, captureImage: captureImage)
+            dependencies: .init(readState: readState, captureImage: { window in
+                try captureImage(window).map { .init(data: $0, captureBounds: window.bounds) }
+            })
         )
     }
 

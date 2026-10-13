@@ -9,6 +9,8 @@ struct HoverPopupObservation {
     let windowID: CGWindowID
     let pid: pid_t
     let bounds: CGRect
+    /// 图片实际覆盖的屏幕区域；未知时只能观察，不能根据宽高猜测裁剪偏移。
+    var captureBounds: CGRect?
     let imageData: Data
     let pixelSize: CGSize
     var permitsInput = true
@@ -16,6 +18,8 @@ struct HoverPopupObservation {
     var permitsBackgroundInput = false
 
     func clickMethod(policy: ExecutionPolicy) -> ClickMethod? {
+        guard let captureBounds, Self.validBounds(captureBounds),
+              bounds.contains(captureBounds) else { return nil }
         if policy.isBackground { return permitsBackgroundInput ? .skyClick : nil }
         return permitsInput ? .global : nil
     }
@@ -36,6 +40,7 @@ struct HoverPopupObservation {
             + (canClick ? " popup_token=\"\(token)\"." : " Observation only; no input token.")
         let geometry = "bounds=(\(bounds.minX), \(bounds.minY), \(bounds.width), \(bounds.height)) screen points"
             + " (Quartz top-left, y down); pixelSize=(\(pixelSize.width), \(pixelSize.height))."
+            + " captureBounds=\(captureBounds.map { String(describing: $0) } ?? "unknown")."
             + " Main coordinates unchanged."
         let usage = if let method {
             "Image-local pixels: click({popup_token:\"\(token)\",x:...,y:...,click_method:\"\(method.rawValue)\"})"
@@ -51,6 +56,8 @@ struct HoverPopupObservation {
             "Image coordinates are local to this observed window, not the main-window screenshot. "
                 + "Same-process geometric candidate only, not proof of popup ownership. "
                 + "This observation does not authorize popup input."
+                + (captureBounds == nil
+                    ? " Capture region is unverified; do not infer a crop offset or click coordinates." : "")
         }
         var image = ToolResultContentItem.screenshotImage(imageData).dictionary
         var metadata: [String: Any] = ["windowID": windowID, "pid": pid, "observationOnly": !canClick]
@@ -102,9 +109,14 @@ struct HoverPopupObservation {
         }
     }
 
+    struct CapturedImage {
+        let data: Data
+        let captureBounds: CGRect?
+    }
+
     struct Dependencies {
         var readState: () -> State?
-        var captureImage: (Window) throws -> Data?
+        var captureImage: (Window) throws -> CapturedImage?
     }
 
     static func capture(
@@ -150,22 +162,24 @@ struct HoverPopupObservation {
         for window in initialCandidates.prefix(4) {
             guard let before = readState(), validRoot(before) else { return .incomplete }
             guard candidates(before).contains(window) else { continue }
-            let data: Data?
+            let capturedImage: CapturedImage?
             do {
-                data = try dependencies.captureImage(window)
+                capturedImage = try dependencies.captureImage(window)
             } catch {
                 incomplete = true
-                data = nil
+                capturedImage = nil
             }
             // 截图失败也复核 root，不能在中途切窗后继续发出其他 token。
             guard let after = readState(), validRoot(after) else { return .incomplete }
-            guard candidates(after).contains(window), let data, let size = pixelSize(of: data) else {
+            guard candidates(after).contains(window), let capturedImage,
+                  let size = pixelSize(of: capturedImage.data) else {
                 incomplete = true
                 continue
             }
             captured.append((window, HoverPopupObservation(
                 token: UUID().uuidString, windowID: window.windowID, pid: window.pid,
-                bounds: window.bounds, imageData: data, pixelSize: size
+                bounds: window.bounds, captureBounds: capturedImage.captureBounds,
+                imageData: capturedImage.data, pixelSize: size
             )))
         }
         // 后续截图期间，之前捕获的窗口也可能关闭或迁移。

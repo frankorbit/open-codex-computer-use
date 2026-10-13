@@ -24,7 +24,8 @@ final class PopupReceiverRevalidationTests: XCTestCase {
     }
 
     private var popup: HoverPopupObservation {
-        HoverPopupObservation(token: token, windowID: 2, pid: 11, bounds: popupBounds, imageData: Data([1]),
+        HoverPopupObservation(token: token, windowID: 2, pid: 11, bounds: popupBounds,
+                              captureBounds: popupBounds, imageData: Data([1]),
                               pixelSize: CGSize(width: 400, height: 200),
                               permitsInput: false, permitsBackgroundInput: true)
     }
