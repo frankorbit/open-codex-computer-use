@@ -4,8 +4,9 @@ import ScreenCaptureKit
 enum LivePreviewCapture {
     /// ScreenCaptureKit 的 backgroundColor 不持有 CGColor，需覆盖整个采集生命周期。
     private static let blackBackground = CGColor(gray: 0, alpha: 1)
+    private static let transparentBackground = CGColor(gray: 0, alpha: 0)
 
-    static func configuration(for size: CGSize) -> SCStreamConfiguration {
+    static func configuration(for size: CGSize, transparent: Bool = false) -> SCStreamConfiguration {
         let config = SCStreamConfiguration()
         let scale = min(2, 960 / max(size.width, size.height))
         config.width = max(1, Int(size.width * scale))
@@ -16,7 +17,10 @@ enum LivePreviewCapture {
         config.capturesAudio = false
         config.scalesToFit = true
         config.preservesAspectRatio = false
-        config.backgroundColor = blackBackground
+        // 弹层的圆角、阴影空隙和不可见区域必须保留 alpha，不能烧成黑色再叠到 root。
+        config.backgroundColor = transparent ? transparentBackground : blackBackground
+        config.pixelFormat = kCVPixelFormatType_32BGRA
+        config.shouldBeOpaque = false
         config.ignoreShadowsSingleWindow = true
         config.ignoreGlobalClipSingleWindow = true
         return config

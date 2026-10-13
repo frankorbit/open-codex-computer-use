@@ -15,6 +15,22 @@ enum LivePreviewPopup {
         let image: CGImage
     }
 
+    static func hasVisibleContent(_ image: CGImage) -> Bool {
+        // 仅检查 alpha；全透明辅助窗不应扩张画布，真实黑色菜单和小弹层仍保留。
+        guard let context = CGContext(
+            data: nil, width: image.width, height: image.height, bitsPerComponent: 8, bytesPerRow: 0,
+            space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ), let data = context.data else { return false }
+        let rect = CGRect(x: 0, y: 0, width: image.width, height: image.height)
+        context.clear(rect)
+        context.draw(image, in: rect)
+        for row in 0 ..< image.height {
+            let bytes = UnsafeRawBufferPointer(start: data + row * context.bytesPerRow, count: image.width * 4)
+            if stride(from: 3, to: bytes.count, by: 4).contains(where: { bytes[$0] != 0 }) { return true }
+        }
+        return false
+    }
+
     static func candidates(target: LivePreviewTarget, state: State) -> [Window] {
         guard state.windows.count(where: { $0.windowID == target.windowID }) == 1,
               let index = state.windows.firstIndex(where: { $0.windowID == target.windowID }),
