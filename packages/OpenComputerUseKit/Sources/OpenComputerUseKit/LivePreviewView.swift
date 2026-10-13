@@ -226,9 +226,17 @@ final class LivePreviewView: NSView {
         NSColor.black.setFill()
         bounds.fill(using: .copy)
         guard let image, let context = NSGraphicsContext.current?.cgContext else {
-            (message as NSString).draw(at: CGPoint(x: 12, y: bounds.midY), withAttributes: [
-                .font: NSFont.systemFont(ofSize: 13), .foregroundColor: NSColor.lightGray
-            ])
+            let paragraph = NSMutableParagraphStyle()
+            paragraph.alignment = .center
+            paragraph.lineBreakMode = .byTruncatingTail
+            let attributes: [NSAttributedString.Key: Any] = [
+                .font: NSFont.systemFont(ofSize: 13), .foregroundColor: NSColor.lightGray,
+                .paragraphStyle: paragraph
+            ]
+            let height = (message as NSString).size(withAttributes: attributes).height
+            let rect = CGRect(x: bounds.minX + 12, y: bounds.midY - height / 2,
+                              width: max(0, bounds.width - 24), height: height)
+            (message as NSString).draw(in: rect, withAttributes: attributes)
             return
         }
         // AppKit 会取整到显示像素，直接填满内容区消除重复 aspect-fit 的细缝。

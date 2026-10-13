@@ -27,17 +27,21 @@ enum LivePreviewCapture {
         return config
     }
 
-    static func makeStream(for window: SCWindow) throws -> (SCStream, AsyncStream<PreviewFrameEvent>) {
+    static func makeStream(for window: SCWindow) throws -> LivePreviewCaptureSession {
+        try makeStream(filter: SCContentFilter(desktopIndependentWindow: window), size: window.frame.size)
+    }
+
+    static func makeStream(filter: SCContentFilter, size: CGSize) throws -> LivePreviewCaptureSession {
         // 只镜像已绑定窗口，即使被其他 App 遮住也不把遮挡者的内容带入预览。
         let events = AsyncStream<PreviewFrameEvent>.makeStream(bufferingPolicy: .bufferingNewest(1))
         let sink = PreviewFrameSink(continuation: events.continuation)
         let stream = SCStream(
-            filter: SCContentFilter(desktopIndependentWindow: window),
-            configuration: configuration(for: window.frame.size),
+            filter: filter,
+            configuration: configuration(for: size),
             delegate: sink
         )
         try stream.addStreamOutput(sink, type: .screen, sampleHandlerQueue: DispatchQueue(label: "ocu.preview.frames"))
-        return (stream, events.stream)
+        return LivePreviewCaptureSession(stream: stream, events: events.stream, sink: sink)
     }
 
     static func currentBounds(
@@ -58,6 +62,15 @@ enum LivePreviewCapture {
         }
         return LivePreviewTarget(pid: target.pid, windowID: target.windowID, bounds: bounds)?.bounds
     }
+}
+
+// MARK: - LivePreviewCaptureSession
+
+/// SCStream 不强持有 output/delegate；会话必须覆盖启动、消费帧和异步停止全过程。
+struct LivePreviewCaptureSession {
+    let stream: SCStream
+    let events: AsyncStream<PreviewFrameEvent>
+    let sink: PreviewFrameSink
 }
 
 // MARK: - PreviewFrameEvent

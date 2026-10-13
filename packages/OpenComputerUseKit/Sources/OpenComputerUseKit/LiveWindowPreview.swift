@@ -20,7 +20,7 @@ final class LiveWindowPreview: NSObject {
     private var state = LivePreviewState()
     private var panel: LivePreviewPanel?
     private let view = LivePreviewView(frame: CGRect(x: 0, y: 0, width: 360, height: 240))
-    private var capture: SCStream?
+    private var capture: LivePreviewCaptureSession?
     private var worker: Task<Void, Never>?
     private var monitor: Task<Void, Never>?
     private let popupCapture = LivePreviewPopupCapture()
@@ -208,24 +208,26 @@ final class LiveWindowPreview: NSObject {
         else {
             throw PreviewCaptureError.targetUnavailable
         }
-        let (stream, events) = try LivePreviewCapture.makeStream(for: window)
+        let session = try LivePreviewCapture.makeStream(for: window)
+        // 取消、建流失败或切窗时也要保留回调接收者，直到消费循环和清理退出。
+        defer { withExtendedLifetime(session) {} }
         do {
-            try await stream.startCapture()
+            try await session.stream.startCapture()
             guard !Task.isCancelled, state.accepts(generation) else {
-                await Self.stopCapture(stream)
+                await Self.stopCapture(session)
                 return
             }
-            capture = stream
+            capture = session
             windowBounds = window.frame
             monitorTarget(target, app: app, size: window.frame.size, generation: generation)
-            for await event in events {
+            for await event in session.events {
                 guard !Task.isCancelled, state.accepts(generation) else {
                     break
                 }
                 receive(event, target: target, captureSize: window.frame.size)
             }
         } catch {
-            await Self.stopCapture(stream)
+            await Self.stopCapture(session)
             throw error
         }
     }
@@ -354,8 +356,9 @@ extension LiveWindowPreview {
         view.sourceSize = canvas.size
     }
 
-    private static func stopCapture(_ stream: SCStream) async {
-        do { try await stream.stopCapture() } catch {
+    private static func stopCapture(_ session: LivePreviewCaptureSession) async {
+        defer { withExtendedLifetime(session) {} }
+        do { try await session.stream.stopCapture() } catch {
             // 不记录屏幕正文；系统可能已经先行终止流。
             Logger(subsystem: "ai.today.ocu", category: "preview")
                 .debug("capture_cleanup code=\((error as NSError).code)")
