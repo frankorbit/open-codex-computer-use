@@ -171,26 +171,26 @@ enum AppDiscovery {
 
     static func resolve(_ query: String) throws -> RunningAppDescriptor {
         try resolve(query, in: runningApps(), installedBundleIdentifier: { name in
-            installedApplicationURL(name).flatMap { Bundle(url: $0)?.bundleIdentifier }
+            try installedApplicationURL(name).flatMap { Bundle(url: $0)?.bundleIdentifier }
         })
     }
 
     static func resolve(
         _ query: String,
         in running: [RunningAppDescriptor],
-        installedBundleIdentifier: (String) -> String? = { _ in nil }
+        installedBundleIdentifier: (String) throws -> String? = { _ in nil }
     ) throws -> RunningAppDescriptor {
         let normalized = query.trimmingCharacters(in: .whitespacesAndNewlines)
         if let blocked = blockedBundleIdentifier(forQuery: normalized) {
             throw AppSafetyPolicy.permissionDenied(bundleIdentifier: blocked)
         }
-        if let match = resolvedRunningApp(in: running, matching: normalized) { return match }
+        if let match = try resolvedRunningApp(in: running, matching: normalized) { return match }
         // 安装名称可能不同于运行名称；只读解析 bundle 身份，不再因此启动一次应用。
-        if !normalized.hasPrefix("/"), let bundleID = installedBundleIdentifier(normalized) {
+        if !normalized.hasPrefix("/"), let bundleID = try installedBundleIdentifier(normalized) {
             guard !AppSafetyPolicy.isBlocked(bundleIdentifier: bundleID) else {
                 throw AppSafetyPolicy.permissionDenied(bundleIdentifier: bundleID)
             }
-            if let match = resolvedRunningApp(in: running, matching: bundleID) { return match }
+            if let match = try resolvedRunningApp(in: running, matching: bundleID) { return match }
         }
         throw ComputerUseError.appNotFound(normalized)
     }
@@ -206,7 +206,7 @@ enum AppDiscovery {
     static func open(
         _ query: String,
         running: [RunningAppDescriptor],
-        locate: (String) -> URL?,
+        locate: (String) throws -> URL?,
         launch: @escaping (URL) throws -> RunningAppDescriptor
     ) throws -> RunningAppDescriptor {
         try prepareOpen(query, running: running, locate: locate, launch: launch).perform()
@@ -215,7 +215,7 @@ enum AppDiscovery {
     static func prepareOpen(
         _ query: String,
         running: [RunningAppDescriptor],
-        locate: (String) -> URL?,
+        locate: (String) throws -> URL?,
         launch: @escaping (URL) throws -> RunningAppDescriptor
     ) throws -> ApplicationOpeningRequest {
         let normalized = query.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -223,13 +223,13 @@ enum AppDiscovery {
             throw AppSafetyPolicy.permissionDenied(bundleIdentifier: blocked)
         }
         let url: URL
-        if let match = resolvedRunningApp(in: running, matching: normalized) {
+        if let match = try resolvedRunningApp(in: running, matching: normalized) {
             guard let bundleURL = match.runningApplication.bundleURL else {
                 throw ComputerUseError.stateUnavailable("Cannot reopen an application without a bundle URL.")
             }
             url = bundleURL
         } else {
-            guard let installedURL = locate(normalized) else {
+            guard let installedURL = try locate(normalized) else {
                 throw ComputerUseError.appNotFound(normalized)
             }
             url = installedURL
@@ -248,7 +248,8 @@ enum AppDiscovery {
         let isRegularApp: Bool
     }
 
-    private static func resolvedRunningApp(in descriptors: [RunningAppDescriptor], matching query: String) -> RunningAppDescriptor? {
+    private static func resolvedRunningApp(in descriptors: [RunningAppDescriptor],
+                                           matching query: String) throws -> RunningAppDescriptor? {
         if query.hasPrefix("/") {
             let url = URL(fileURLWithPath: query).resolvingSymlinksInPath()
             return descriptors.first {
@@ -256,11 +257,9 @@ enum AppDiscovery {
                     && $0.runningApplication.bundleURL?.resolvingSymlinksInPath() == url
             }
         }
-        if isBundleIdentifierQuery(query) {
-            return descriptors.first(where: { descriptor in
-                descriptor.bundleIdentifier?.caseInsensitiveCompare(query) == .orderedSame
-            })
-        }
+        if isBundleIdentifierQuery(query), let match = descriptors.first(where: { descriptor in
+            descriptor.bundleIdentifier?.caseInsensitiveCompare(query) == .orderedSame
+        }) { return match }
 
         let allowed = descriptors.filter { descriptor in
             !AppSafetyPolicy.isBlocked(bundleIdentifier: descriptor.bundleIdentifier)
@@ -273,11 +272,18 @@ enum AppDiscovery {
             )
         }
 
-        guard let index = bestResolutionIndex(of: candidates, matching: query) else {
+        if let index = bestResolutionIndex(of: candidates, matching: query) { return allowed[index] }
+        // 名称别名优先只检查正在运行的用户应用，不因普通中文查询遍历整个安装目录。
+        let regular = allowed.filter { $0.runningApplication.activationPolicy == .regular }
+        let urls = regular.compactMap(\.runningApplication.bundleURL)
+        guard let url = try InstalledApplicationResolver.applicationURL(named: query, applicationURLs: urls) else {
             return nil
         }
-
-        return allowed[index]
+        let identifier = Bundle(url: url)?.bundleIdentifier
+        return regular.first {
+            $0.bundleIdentifier == identifier
+                && $0.runningApplication.bundleURL?.resolvingSymlinksInPath().standardizedFileURL == url
+        }
     }
 
     static func bestResolutionIndex(of candidates: [ResolutionCandidate], matching query: String) -> Int? {
@@ -381,55 +387,17 @@ enum AppDiscovery {
         return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
     }
 
-    private static func installedApplicationURL(_ query: String) -> URL? {
+    static func installedApplicationURL(_ query: String) throws -> URL? {
         if query.hasPrefix("/") {
             let url = URL(fileURLWithPath: query).resolvingSymlinksInPath()
             guard url.pathExtension.lowercased() == "app", Bundle(url: url)?.bundleIdentifier != nil else { return nil }
             return url
         }
-        if isBundleIdentifierQuery(query) {
-            return NSWorkspace.shared.urlForApplication(withBundleIdentifier: query)
+        if isBundleIdentifierQuery(query),
+           let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: query) {
+            return url
         }
-        return applicationURL(named: query)
-    }
-
-    private static func applicationURL(named query: String) -> URL? {
-        let targetName = stripAppSuffix(from: query).trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !targetName.isEmpty else {
-            return nil
-        }
-
-        let fileManager = FileManager.default
-        let resourceKeys: [URLResourceKey] = [.isApplicationKey, .isDirectoryKey, .nameKey]
-        var visitedPaths: Set<String> = []
-
-        for root in standardApplicationSearchRoots where fileManager.fileExists(atPath: root.path) {
-            guard let enumerator = fileManager.enumerator(
-                at: root,
-                includingPropertiesForKeys: resourceKeys,
-                options: [.skipsHiddenFiles, .skipsPackageDescendants]
-            ) else {
-                continue
-            }
-
-            for case let candidateURL as URL in enumerator {
-                guard candidateURL.pathExtension.caseInsensitiveCompare("app") == .orderedSame else {
-                    continue
-                }
-
-                let normalizedPath = candidateURL.standardizedFileURL.path.lowercased()
-                guard visitedPaths.insert(normalizedPath).inserted else {
-                    continue
-                }
-
-                let candidateName = stripAppSuffix(from: candidateURL.lastPathComponent)
-                if candidateName.caseInsensitiveCompare(targetName) == .orderedSame {
-                    return candidateURL
-                }
-            }
-        }
-
-        return nil
+        return try InstalledApplicationResolver.applicationURL(named: query, roots: standardApplicationSearchRoots)
     }
 
     static func backgroundLaunchConfiguration() -> NSWorkspace.OpenConfiguration {

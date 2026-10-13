@@ -234,6 +234,8 @@ click MCP 回执中的 `_meta.ocuDiagnostic` 关联 `ai.today.ocu / input` 的 O
 
 ## 应用绑定与观察
 
+macOS 应用名称解析保留路径、bundle ID 和运行名称的既有优先级；未命中时，先检查正在运行的用户应用安装包，再检查标准安装目录。名称候选来自 `.app` 文件名、`CFBundleName` / `CFBundleDisplayName`、各语言 `InfoPlist.strings` 和按语言分组的 `InfoPlist.loctable`，不受系统当前语言限制。匹配仅规范化大小写、Unicode 和 `.app` 后缀，不猜测翻译或模糊前缀；未声明的别名仍可能查不到。新增名称匹配出现多个实际安装路径时返回歧义和候选身份，要求明确 bundle ID 或路径；同一包的符号链接去重，内嵌 helper 不作为独立应用发现。解析只读，安全策略、单次打开与失败后不重放规则不变。`list_apps` 仍是运行及近期应用视图，不代表完整安装列表。
+
 `cua.getApp(nameOrBundleID)` 在一次 `get_app_state(initialize=true)` 调用内完成绑定：已有窗口直接返回；未运行时后台启动；已有进程但有界观察后仍明确无窗口时，通过 NSWorkspace 后台 reopen 一次。回调的实际 PID、bundle 身份用于后续快照，不再根据安装包名重新猜测进程。打开后仅重试只读观察，不重发打开操作；权限或其他错误保持原错误，不触发 reopen。打开不保证创建文档，模型必须根据返回的打开面板或窗口继续操作。
 
 绑定对象的 `getAXState` / `getScreenshot` / `getAXStateAndScreenshot` 明确发送 `initialize=false`；动作回读也只观察。原生 MCP 工具与 CLI snapshot 默认初始化，兼容直接使用原生入口启动目标的路径。系统配置 `activates=false` 且不新建应用实例；这只表示不主动要求前台激活，不保证第三方应用自己不会改变焦点。
