@@ -43,23 +43,66 @@ private func normalizedElementIndexNumber(_ value: Double) -> String? {
 
 public final class ComputerUseToolDispatcher {
     private let service: ComputerUseService
+    private let menuFocus: SkyClickMenuFocus
 
     public init(service: ComputerUseService = ComputerUseService()) {
         self.service = service
+        menuFocus = SkyClickMenuFocus()
     }
 
-    func discardHoverPopups() { service.discardHoverPopups(); _ = service.takeForegroundObservation() }
+    init(service: ComputerUseService, menuFocus: SkyClickMenuFocus) {
+        self.service = service
+        self.menuFocus = menuFocus
+    }
+
+    func discardHoverPopups() {
+        menuFocus.cancelAfterFailure()
+        service.discardHoverPopups()
+        _ = service.takeForegroundObservation()
+    }
+
+    deinit { menuFocus.cancelAfterFailure() }
 
     public func callTool(name: String, arguments: [String: Any]) throws -> ToolCallResult {
-        let foregroundObservation = service.takeForegroundObservation()
+        // 无目标查询不切换菜单焦点；仍消费旧输入凭证，保留必须紧邻新观察的约束。
+        if name == "list_apps" {
+            _ = service.takeForegroundObservation()
+            service.discardHoverPopups()
+            _ = try ExecutionPolicy.current()
+            try validateNativeToolArguments(name: name, arguments: arguments)
+            return service.listApps()
+        }
         do {
             _ = try ExecutionPolicy.current()
             try validateNativeToolArguments(name: name, arguments: arguments)
+            try menuFocus.beginRequest(app: arguments["app"] as? String)
+            return try SkyClickMenuFocus.$current.withValue(menuFocus) {
+                let observesPopup: Bool
+                if name == "hover", case .observation = try HoverRequest(arguments: arguments).target {
+                    observesPopup = true
+                } else {
+                    observesPopup = false
+                }
+                let result: ToolCallResult
+                if !["click", "get_app_state"].contains(name), !observesPopup {
+                    result = try menuFocus.withInteraction {
+                        try callToolWithinInteraction(name: name, arguments: arguments)
+                    }
+                } else {
+                    result = try callToolWithinInteraction(name: name, arguments: arguments)
+                }
+                if result.isError { try menuFocus.cancel() }
+                return result
+            }
         } catch {
-            // 畸形参数也消耗旧弹层凭证，不能修正参数后重放同一观察。
-            service.discardHoverPopups()
+            // 参数或策略失败也消耗旧观察，不能修正参数后重放旧凭证。
+            discardHoverPopups()
             throw error
         }
+    }
+
+    private func callToolWithinInteraction(name: String, arguments: [String: Any]) throws -> ToolCallResult {
+        let foregroundObservation = service.takeForegroundObservation()
         if name != "click" || arguments["popup_token"] == nil { service.discardHoverPopups() }
         var input = !["list_apps", "get_app_state"].contains(name)
         if name == "hover", case .observation = try HoverRequest(arguments: arguments).target {

@@ -270,8 +270,8 @@ extension BackgroundPopupClickTests {
 }
 
 extension BackgroundPopupClickTests {
-    func testSkyPreparationAndPrimerWaitCrossingTTLStopsTargetDownWithoutReplay() throws {
-        for stage in 0 ... 2 {
+    func testSkyPreparationAndMoveWaitCrossingTTLStopsTargetDownWithoutReplay() throws {
+        for stage in 0 ... 1 {
             var cache = HoverPopupCache()
             cache.record([popup()], snapshot: snapshot(), now: 10)
             let lease = try cache.take(token)
@@ -285,23 +285,22 @@ extension BackgroundPopupClickTests {
             }
             var posted: [SkyClickEventStep] = []
             XCTAssertThrowsError(try dispatchPopupClick(method: .skyClick, validate: validate, submit: {
-                // stage 0 模拟锁/焦点等待；stage 1 在 primer down 后过期；stage 2 在 primer up 后过期。
+                // stage 0 模拟锁/焦点等待；stage 1 在 move 后过期。
                 if stage == 0 { clock = 41 }
-                try dispatchSkyClickEvents(skyClickEventRecipe(clickCount: 1), validateBeforeSubmission: validate,
+                try dispatchSkyClickEvents(skyClickEventRecipe(clickCount: 1, profile: .popup), validateBeforeSubmission: validate,
                                            post: { posted.append($0) }, wait: { _ in
-                                               if stage == 1, posted.last?.kind == .down { clock = 41 }
-                                               if stage == 2, posted.last?.kind == .up { clock = 41 }
+                                               if stage == 1, posted.last?.kind == .moved { clock = 41 }
                                            })
             }, readBack: { XCTFail("Rejected submission must not read back as success") })) {
                 XCTAssertTrue($0.localizedDescription.contains("input may have occurred"))
             }
-            XCTAssertEqual(posted.map(\.kind), stage == 0 ? [] : [.moved, .down, .up])
+            XCTAssertEqual(posted.map(\.kind), stage == 0 ? [] : [.moved])
             XCTAssertFalse(posted.contains { $0.kind == .down && $0.pointKind == .target })
             XCTAssertThrowsError(try cache.take(token))
         }
     }
 
-    func testPrimerClosingMovingOrCoveringPopupPreventsRealDownButKeepsPrimerUp() throws {
+    func testMoveClosingMovingOrCoveringPopupPreventsTargetDown() throws {
         let original = [window(2, bounds: popupBounds), window(1, bounds: rootBounds)]
         let changedStates = [
             [original[1]],
@@ -331,10 +330,10 @@ extension BackgroundPopupClickTests {
                                                 })
             }
             XCTAssertThrowsError(try dispatchPopupClick(method: .skyClick, validate: validate, submit: {
-                try dispatchSkyClickEvents(skyClickEventRecipe(clickCount: 1), validateBeforeSubmission: validate,
+                try dispatchSkyClickEvents(skyClickEventRecipe(clickCount: 1, profile: .popup), validateBeforeSubmission: validate,
                                            post: { step in
                                                posted.append(step)
-                                               if step.kind == .down, step.pointKind == .primer {
+                                               if step.kind == .moved {
                                                    windows = changed
                                                    if index == changedStates.count - 1 { receiver = 99 }
                                                }
@@ -342,8 +341,8 @@ extension BackgroundPopupClickTests {
             }, readBack: { XCTFail("Unknown effect must not read back as success") })) {
                 XCTAssertTrue($0.localizedDescription.contains("input may have occurred"))
             }
-            XCTAssertEqual(posted.map(\.kind), [.moved, .down, .up])
-            XCTAssertEqual(posted.last?.pointKind, .primer)
+            XCTAssertEqual(posted.map(\.kind), [.moved])
+            XCTAssertEqual(posted.last?.pointKind, .target)
         }
     }
 

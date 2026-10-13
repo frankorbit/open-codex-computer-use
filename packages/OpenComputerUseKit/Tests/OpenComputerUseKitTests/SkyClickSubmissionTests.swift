@@ -6,29 +6,11 @@ final class SkyClickSubmissionTests: XCTestCase {
     func testPopupDeliversExactlyOneTargetPairThroughSkyLight() throws {
         let recipe = try skyClickEventRecipe(clickCount: 1, profile: .popup)
         var skyEvents: [SkyClickEventKind] = []
-        var publicEvents: [SkyClickEventKind] = []
         try dispatchSkyClickEvents(recipe, post: { step in
             XCTAssertEqual(step.pointKind, .target)
-            try postSkyClickEvent(profile: .popup, button: .left, skyLight: {
-                skyEvents.append(step.kind)
-            }, publicPID: {
-                publicEvents.append(step.kind)
-            })
+            skyEvents.append(step.kind)
         }, wait: { _ in })
         XCTAssertEqual(skyEvents, [.moved, .down, .up])
-        XCTAssertTrue(publicEvents.isEmpty)
-    }
-
-    func testStandardDeliveryStillUsesBothChannelsOnlyForLeftButton() throws {
-        for button in [MouseButtonKind.left, .right] {
-            var channels: [String] = []
-            try postSkyClickEvent(profile: .standard, button: button, skyLight: {
-                channels.append("sky")
-            }, publicPID: {
-                channels.append("public")
-            })
-            XCTAssertEqual(channels, button == .left ? ["sky", "public"] : ["sky"])
-        }
     }
 
     func testPopupStillRevalidatesBeforeDownAndAlwaysReleasesSubmittedDown() throws {
@@ -60,16 +42,6 @@ final class SkyClickSubmissionTests: XCTestCase {
         }
     }
 
-    func testDeliveryFailureNeverFallsBackToPublicPID() {
-        for profile in [SkyClickProfile.standard, .popup] {
-            XCTAssertThrowsError(try postSkyClickEvent(profile: profile, button: .left, skyLight: {
-                throw ComputerUseError.message("delivery unknown")
-            }, publicPID: {
-                XCTFail("Unknown delivery must not fall back")
-            }))
-        }
-    }
-
     func testDefaultPathPreservesLeftRightAndDoubleClickEventsAndDelays() throws {
         for (button, count) in [(MouseButtonKind.left, 1), (.left, 2), (.right, 1)] {
             let recipe = try skyClickEventRecipe(clickCount: count, button: button)
@@ -92,7 +64,7 @@ final class SkyClickSubmissionTests: XCTestCase {
         XCTAssertTrue(posted.isEmpty)
     }
 
-    func testMoveDelayCanRevokePrimerDown() throws {
+    func testMoveDelayCanRevokeTargetDown() throws {
         var valid = true
         var posted: [SkyClickEventStep] = []
         XCTAssertThrowsError(try dispatchSkyClickEvents(
@@ -110,7 +82,7 @@ final class SkyClickSubmissionTests: XCTestCase {
 
     func testInvalidationAfterEitherDownCannotSuppressMatchingUp() throws {
         for invalidatingPoint in [SkyClickPointKind.primer, .target] {
-            let recipe = try skyClickEventRecipe(clickCount: 1)
+            let recipe = try skyClickEventRecipe(clickCount: invalidatingPoint == .primer ? 2 : 1)
             var valid = true
             var posted: [SkyClickEventStep] = []
             func run() throws {

@@ -37,6 +37,22 @@ final class SnapshotInvalidationTests: XCTestCase {
         XCTAssertNil(service.takeForegroundObservation())
     }
 
+    func testListAppsStillConsumesSingleForegroundObservationEvenOnInvalidArguments() throws {
+        let harness = SnapshotHarness()
+        harness.addApp(name: "Editor", bundle: "test.editor", pid: 41001)
+        let service = ComputerUseService(snapshotDependencies: harness.dependencies, allowsForegroundClickOnce: true)
+        let dispatcher = ComputerUseToolDispatcher(service: service)
+        for invalid in [false, true] {
+            _ = try dispatcher.callTool(name: "get_app_state", arguments: ["app": "Editor", "initialize": false])
+            if invalid {
+                XCTAssertThrowsError(try dispatcher.callTool(name: "list_apps", arguments: ["unexpected": true]))
+            } else {
+                XCTAssertFalse(try dispatcher.callTool(name: "list_apps", arguments: [:]).isError)
+            }
+            XCTAssertNil(service.takeForegroundObservation())
+        }
+    }
+
     func testSingleForegroundMissingScreenshotInvalidatesInputSnapshotAndCannotReplay() throws {
         let harness = SnapshotHarness()
         harness.addApp(name: "Editor", bundle: "test.editor", pid: 41001)

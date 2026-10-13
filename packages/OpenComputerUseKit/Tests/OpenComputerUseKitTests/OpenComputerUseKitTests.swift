@@ -1681,13 +1681,13 @@ final class OpenComputerUseKitTests: XCTestCase {
         XCTAssertEqual(right.map(\.clickState), [0, 1, 1])
     }
 
-    func testSkyClickRecipeIncludesMovePrimerAndTargetPairs() throws {
+    func testSkyClickSingleUsesOnlyTargetAndDoublePreservesItsRecipe() throws {
         let single = try skyClickEventRecipe(clickCount: 1)
-        XCTAssertEqual(single.count, 5)
-        XCTAssertEqual(single.map(\.kind), [.moved, .down, .up, .down, .up])
-        XCTAssertEqual(single.map(\.pointKind), [.target, .primer, .primer, .target, .target])
-        XCTAssertEqual(single.map(\.phase), [2, 1, 2, 3, 3])
-        XCTAssertEqual(single.map(\.clickState), [0, 1, 1, 1, 1])
+        XCTAssertEqual(single.count, 3)
+        XCTAssertEqual(single.map(\.kind), [.moved, .down, .up])
+        XCTAssertEqual(single.map(\.pointKind), [.target, .target, .target])
+        XCTAssertEqual(single.map(\.phase), [2, 3, 3])
+        XCTAssertEqual(single.map(\.clickState), [0, 1, 1])
 
         let double = try skyClickEventRecipe(clickCount: 2)
         XCTAssertEqual(double.count, 7)

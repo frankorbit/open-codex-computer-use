@@ -123,7 +123,7 @@ final class PopupReceiverRevalidationTests: XCTestCase {
         XCTAssertThrowsError(try cache.take(token))
     }
 
-    func testReceiverWaitAfterPrimerMovesPopupAndStopsTargetDownWithoutReplay() throws {
+    func testReceiverWaitAfterMoveMovesPopupAndStopsTargetDownWithoutReplay() throws {
         var cache = HoverPopupCache()
         cache.record([popup], snapshot: snapshot, now: 10)
         let lease = try cache.take(token)
@@ -136,7 +136,7 @@ final class PopupReceiverRevalidationTests: XCTestCase {
                                                 try validateHoverPopupWindows(
                                                     popup, point: point, snapshot: snapshot,
                                                     query: { current }, mouseReceiver: { _ in
-                                                        if posted.last?.kind == .up {
+                                                        if posted.last?.kind == .moved {
                                                             current[0] = self.window(
                                                                 2, bounds: self.popupBounds.offsetBy(dx: 1, dy: 0)
                                                             )
@@ -147,13 +147,13 @@ final class PopupReceiverRevalidationTests: XCTestCase {
                                             })
         }
         XCTAssertThrowsError(try dispatchPopupClick(method: .skyClick, validate: validate, submit: {
-            try dispatchSkyClickEvents(skyClickEventRecipe(clickCount: 1), validateBeforeSubmission: validate,
+            try dispatchSkyClickEvents(skyClickEventRecipe(clickCount: 1, profile: .popup), validateBeforeSubmission: validate,
                                        post: { posted.append($0) }, wait: { _ in })
-        }, readBack: { XCTFail("Uncertain primer effect must not read back as success") })) {
+        }, readBack: { XCTFail("Uncertain move effect must not read back as success") })) {
             XCTAssertTrue($0.localizedDescription.contains("input may have occurred"))
         }
-        XCTAssertEqual(posted.map(\.kind), [.moved, .down, .up])
-        XCTAssertEqual(posted.last?.pointKind, .primer)
+        XCTAssertEqual(posted.map(\.kind), [.moved])
+        XCTAssertEqual(posted.last?.pointKind, .target)
         XCTAssertThrowsError(try cache.take(token))
     }
 }

@@ -37,17 +37,6 @@ enum SkyClickProfile: Sendable {
     case popup
 }
 
-/// 弹层避免双通道重复投递；普通左键继续使用原有双通道。
-func postSkyClickEvent(
-    profile: SkyClickProfile,
-    button: MouseButtonKind,
-    skyLight: () throws -> Void,
-    publicPID: () -> Void
-) throws {
-    try skyLight()
-    if profile == .standard, button == .left { publicPID() }
-}
-
 struct SkyClickEventStep: Equatable, Sendable {
     let kind: SkyClickEventKind
     let pointKind: SkyClickPointKind
@@ -77,7 +66,7 @@ func skyClickEventRecipe(
     }
 
     var steps = [SkyClickEventStep(kind: .moved, pointKind: .target, clickState: 0, phase: 2, delayAfter: 0.015)]
-    if profile == .standard {
+    if profile == .standard, clickCount == 2 {
         steps.append(SkyClickEventStep(kind: .down, pointKind: .primer, clickState: 1, phase: 1, delayAfter: 0.001))
         steps.append(SkyClickEventStep(kind: .up, pointKind: .primer, clickState: 1, phase: 2, delayAfter: 0.100))
     }
@@ -135,7 +124,13 @@ func dispatchSkyClickEvents(
 enum SkyClickDispatcher {
     private static let primerScreenPoint = CGPoint(x: -1, y: -1)
     private static let primerWindowPoint = CGPoint(x: -1, y: -1)
-    private static let dispatchLock = NSLock()
+    private static let dispatchLock = NSRecursiveLock()
+
+    static func synchronized<T>(_ body: () throws -> T) rethrows -> T {
+        dispatchLock.lock()
+        defer { dispatchLock.unlock() }
+        return try body()
+    }
 
     // Raw private event fields used by the Chromium-compatible Cua Driver path.
     private enum EventField {
@@ -191,17 +186,8 @@ enum SkyClickDispatcher {
             "screen_point": InputDiagnostics.point(target.screenPoint), "window_point": InputDiagnostics.point(target.windowPoint),
             "delay_scale": String(InputTiming.skyClickDelayScale), "event_count": String(recipe.count),
         ])
-        let focusContext: SkyLightSyntheticFocusContext?
-        if frontmostPID == target.pid {
-            focusContext = nil
-        } else {
-            focusContext = try spi.beginSyntheticTargetFocus(
-                targetPID: target.pid,
-                targetWindowID: target.windowID
-            )
-        }
-
-        do {
+        let interaction = SkyClickMenuFocus.current ?? SkyClickMenuFocus(retainsMenus: false)
+        try interaction.deliver(target: target, profile: profile, button: button, clickCount: clickCount) {
             try dispatchSkyClickEvents(recipe, validateBeforeSubmission: validateBeforeSubmission, post: { step in
                 let screenPoint = step.pointKind == .target ? target.screenPoint : primerScreenPoint
                 let windowPoint = step.pointKind == .target ? target.windowPoint : primerWindowPoint
@@ -227,16 +213,13 @@ enum SkyClickDispatcher {
                     spi: spi
                 )
 
-                try postSkyClickEvent(profile: profile, button: button, skyLight: {
-                    try spi.postToPid(event, pid: target.pid)
-                }, publicPID: {
-                    event.postToPid(target.pid)
-                })
+                // 每个事件只走一个通道；双投递会让切换型控件打开后立即关闭。
+                try spi.postToPid(event, pid: target.pid)
                 InputDiagnostics.event("sky_event_posted", [
                     "event_type": String(step.kind.cgEventType(button: button).rawValue), "phase": String(step.phase),
                     "click_state": String(step.clickState), "screen_point": InputDiagnostics.point(screenPoint),
                     "window_point": InputDiagnostics.point(windowPoint),
-                    "channels": profile == .standard && button == .left ? "skylight_and_public_pid" : "skylight_pid",
+                    "channels": "skylight_pid",
                 ])
             }, wait: { interval in
                 let delay = interval * InputTiming.skyClickDelayScale
@@ -244,22 +227,6 @@ enum SkyClickDispatcher {
                     Thread.sleep(forTimeInterval: delay)
                 }
             })
-        } catch {
-            if let focusContext {
-                try? spi.endSyntheticTargetFocus(focusContext)
-            }
-            throw error
-        }
-
-        if let focusContext {
-            // SkyLight delivery is asynchronous. Keep the target's AppKit
-            // synthetic active state long enough for Chromium's renderer hop
-            // to consume the final mouse-up before deactivating only the target.
-            let rendererSettle = 0.100 * InputTiming.skyClickDelayScale
-            if rendererSettle > 0 {
-                Thread.sleep(forTimeInterval: rendererSettle)
-            }
-            try spi.endSyntheticTargetFocus(focusContext)
         }
     }
 
