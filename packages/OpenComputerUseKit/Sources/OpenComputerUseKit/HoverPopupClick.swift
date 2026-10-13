@@ -225,7 +225,7 @@ func validateHoverPopupClick(
     return try lease.globalPoint(for: request.point, snapshot: snapshot, now: now(), method: request.method)
 }
 
-/// 保留 lease 上下文，使锁等待、焦点准备和 primer 后仍能复验原凭证与点击点。
+/// 保留 lease 上下文，使锁等待、焦点准备和移动事件后仍能复验原凭证与点击点。
 func submitHoverPopupClick(
     _ lease: HoverPopupLease, request: HoverPopupClickRequest, snapshot: AppSnapshot, point: CGPoint
 ) throws {
@@ -252,6 +252,7 @@ func submitHoverPopupClick(
                 at: eventPoint,
                 windowPoint: CGPoint(x: point.x - popup.bounds.minX, y: point.y - popup.bounds.minY),
                 windowBounds: popup.bounds, windowID: popup.windowID, clickCount: 1, pid: popup.pid, button: .left,
+                profile: .popup,
                 validateBeforeSubmission: validateBeforeSubmission
             )
         }

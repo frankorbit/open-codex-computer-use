@@ -32,6 +32,22 @@ enum SkyClickPointKind: Equatable, Sendable {
     case primer
 }
 
+enum SkyClickProfile: Sendable {
+    case standard
+    case popup
+}
+
+/// 弹层避免双通道重复投递；普通左键继续使用原有双通道。
+func postSkyClickEvent(
+    profile: SkyClickProfile,
+    button: MouseButtonKind,
+    skyLight: () throws -> Void,
+    publicPID: () -> Void
+) throws {
+    try skyLight()
+    if profile == .standard, button == .left { publicPID() }
+}
+
 struct SkyClickEventStep: Equatable, Sendable {
     let kind: SkyClickEventKind
     let pointKind: SkyClickPointKind
@@ -40,7 +56,11 @@ struct SkyClickEventStep: Equatable, Sendable {
     let delayAfter: TimeInterval
 }
 
-func skyClickEventRecipe(clickCount: Int, button: MouseButtonKind = .left) throws -> [SkyClickEventStep] {
+func skyClickEventRecipe(
+    clickCount: Int,
+    button: MouseButtonKind = .left,
+    profile: SkyClickProfile = .standard
+) throws -> [SkyClickEventStep] {
     try validateSkyClickArguments(method: .skyClick, mouseButton: button.rawValue, clickCount: clickCount)
     // 右键只投递目标处的一对事件；不能复用左键的离屏 primer，避免额外菜单和点击。
     if button == .right {
@@ -56,11 +76,11 @@ func skyClickEventRecipe(clickCount: Int, button: MouseButtonKind = .left) throw
         )
     }
 
-    var steps = [
-        SkyClickEventStep(kind: .moved, pointKind: .target, clickState: 0, phase: 2, delayAfter: 0.015),
-        SkyClickEventStep(kind: .down, pointKind: .primer, clickState: 1, phase: 1, delayAfter: 0.001),
-        SkyClickEventStep(kind: .up, pointKind: .primer, clickState: 1, phase: 2, delayAfter: 0.100),
-    ]
+    var steps = [SkyClickEventStep(kind: .moved, pointKind: .target, clickState: 0, phase: 2, delayAfter: 0.015)]
+    if profile == .standard {
+        steps.append(SkyClickEventStep(kind: .down, pointKind: .primer, clickState: 1, phase: 1, delayAfter: 0.001))
+        steps.append(SkyClickEventStep(kind: .up, pointKind: .primer, clickState: 1, phase: 2, delayAfter: 0.100))
+    }
 
     for pairIndex in 1...clickCount {
         steps.append(
@@ -134,6 +154,7 @@ enum SkyClickDispatcher {
         target: SkyClickTarget,
         clickCount: Int,
         button: MouseButtonKind = .left,
+        profile: SkyClickProfile = .standard,
         spi: SkyLightSPI = .shared,
         validateBeforeSubmission: (() throws -> Void)? = nil
     ) throws {
@@ -153,7 +174,7 @@ enum SkyClickDispatcher {
         // 锁等待期间可能已过期；发出合成焦点事件前先拒绝失效凭证。
         try validateBeforeSubmission?()
         try validate(target: target)
-        let recipe = try skyClickEventRecipe(clickCount: clickCount, button: button)
+        let recipe = try skyClickEventRecipe(clickCount: clickCount, button: button, profile: profile)
         guard let source = CGEventSource(stateID: .hidSystemState) else {
             throw ComputerUseError.message("Failed to create SkyLight HID event source.")
         }
@@ -206,12 +227,16 @@ enum SkyClickDispatcher {
                     spi: spi
                 )
 
-                try post(event, pid: target.pid, button: button, spi: spi)
+                try postSkyClickEvent(profile: profile, button: button, skyLight: {
+                    try spi.postToPid(event, pid: target.pid)
+                }, publicPID: {
+                    event.postToPid(target.pid)
+                })
                 InputDiagnostics.event("sky_event_posted", [
                     "event_type": String(step.kind.cgEventType(button: button).rawValue), "phase": String(step.phase),
                     "click_state": String(step.clickState), "screen_point": InputDiagnostics.point(screenPoint),
                     "window_point": InputDiagnostics.point(windowPoint),
-                    "channels": button == .left ? "skylight_and_public_pid" : "skylight_pid",
+                    "channels": profile == .standard && button == .left ? "skylight_and_public_pid" : "skylight_pid",
                 ])
             }, wait: { interval in
                 let delay = interval * InputTiming.skyClickDelayScale
@@ -236,12 +261,6 @@ enum SkyClickDispatcher {
             }
             try spi.endSyntheticTargetFocus(focusContext)
         }
-    }
-
-    private static func post(_ event: CGEvent, pid: pid_t, button: MouseButtonKind, spi: SkyLightSPI) throws {
-        // 左键保留原有双通道；右键只走 SkyLight，双投递会让 Chromium 触发两次 contextmenu。
-        try spi.postToPid(event, pid: pid)
-        if button == .left { event.postToPid(pid) }
     }
 
     private static func validate(target: SkyClickTarget) throws {

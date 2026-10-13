@@ -3,6 +3,73 @@ import Foundation
 import XCTest
 
 final class SkyClickSubmissionTests: XCTestCase {
+    func testPopupDeliversExactlyOneTargetPairThroughSkyLight() throws {
+        let recipe = try skyClickEventRecipe(clickCount: 1, profile: .popup)
+        var skyEvents: [SkyClickEventKind] = []
+        var publicEvents: [SkyClickEventKind] = []
+        try dispatchSkyClickEvents(recipe, post: { step in
+            XCTAssertEqual(step.pointKind, .target)
+            try postSkyClickEvent(profile: .popup, button: .left, skyLight: {
+                skyEvents.append(step.kind)
+            }, publicPID: {
+                publicEvents.append(step.kind)
+            })
+        }, wait: { _ in })
+        XCTAssertEqual(skyEvents, [.moved, .down, .up])
+        XCTAssertTrue(publicEvents.isEmpty)
+    }
+
+    func testStandardDeliveryStillUsesBothChannelsOnlyForLeftButton() throws {
+        for button in [MouseButtonKind.left, .right] {
+            var channels: [String] = []
+            try postSkyClickEvent(profile: .standard, button: button, skyLight: {
+                channels.append("sky")
+            }, publicPID: {
+                channels.append("public")
+            })
+            XCTAssertEqual(channels, button == .left ? ["sky", "public"] : ["sky"])
+        }
+    }
+
+    func testPopupStillRevalidatesBeforeDownAndAlwaysReleasesSubmittedDown() throws {
+        for invalidateAfter in [SkyClickEventKind.moved, .down] {
+            var valid = true
+            var posted: [SkyClickEventKind] = []
+            func run() throws {
+                try dispatchSkyClickEvents(
+                    skyClickEventRecipe(clickCount: 1, profile: .popup),
+                    validateBeforeSubmission: {
+                        if !valid {
+                            throw ComputerUseError.message("receiver changed")
+                        }
+                    }, post: { step in
+                        posted.append(step.kind)
+                        if step.kind == invalidateAfter {
+                            valid = false
+                        }
+                    }, wait: { _ in }
+                )
+            }
+            if invalidateAfter == .moved {
+                XCTAssertThrowsError(try run())
+                XCTAssertEqual(posted, [.moved])
+            } else {
+                XCTAssertNoThrow(try run())
+                XCTAssertEqual(posted, [.moved, .down, .up])
+            }
+        }
+    }
+
+    func testDeliveryFailureNeverFallsBackToPublicPID() {
+        for profile in [SkyClickProfile.standard, .popup] {
+            XCTAssertThrowsError(try postSkyClickEvent(profile: profile, button: .left, skyLight: {
+                throw ComputerUseError.message("delivery unknown")
+            }, publicPID: {
+                XCTFail("Unknown delivery must not fall back")
+            }))
+        }
+    }
+
     func testDefaultPathPreservesLeftRightAndDoubleClickEventsAndDelays() throws {
         for (button, count) in [(MouseButtonKind.left, 1), (.left, 2), (.right, 1)] {
             let recipe = try skyClickEventRecipe(clickCount: count, button: button)
@@ -31,7 +98,9 @@ final class SkyClickSubmissionTests: XCTestCase {
         XCTAssertThrowsError(try dispatchSkyClickEvents(
             skyClickEventRecipe(clickCount: 1),
             validateBeforeSubmission: {
-                if !valid { throw ComputerUseError.message("receiver changed") }
+                if !valid {
+                    throw ComputerUseError.message("receiver changed")
+                }
             },
             post: { posted.append($0) },
             wait: { _ in valid = false }
@@ -46,10 +115,14 @@ final class SkyClickSubmissionTests: XCTestCase {
             var posted: [SkyClickEventStep] = []
             func run() throws {
                 try dispatchSkyClickEvents(recipe, validateBeforeSubmission: {
-                    if !valid { throw ComputerUseError.message("popup closed after down") }
+                    if !valid {
+                        throw ComputerUseError.message("popup closed after down")
+                    }
                 }, post: { step in
                     posted.append(step)
-                    if step.kind == .down, step.pointKind == invalidatingPoint { valid = false }
+                    if step.kind == .down, step.pointKind == invalidatingPoint {
+                        valid = false
+                    }
                 }, wait: { _ in })
             }
             if invalidatingPoint == .primer {

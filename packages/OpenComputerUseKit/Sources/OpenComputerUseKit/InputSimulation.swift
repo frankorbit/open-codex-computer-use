@@ -126,6 +126,7 @@ enum InputSimulation {
         clickCount: Int,
         pid: pid_t,
         button: MouseButtonKind = .left,
+        profile: SkyClickProfile = .standard,
         validateBeforeSubmission: (() throws -> Void)? = nil
     ) throws {
         try SkyClickDispatcher.click(
@@ -138,6 +139,7 @@ enum InputSimulation {
             ),
             clickCount: clickCount,
             button: button,
+            profile: profile,
             validateBeforeSubmission: validateBeforeSubmission
         )
     }
