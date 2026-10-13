@@ -208,7 +208,6 @@ enum SoftwareCursorOverlay {
         cancelPendingHide()
         configureOrdering(relativeTo: targetWindow)
 
-        let constrainedTarget = clampTipPosition(targetPoint)
         let isFreshStart = displayedTipPosition == nil
         let startPoint = displayedTipPosition ?? defaultInitialTipPosition()
         let now = CACurrentMediaTime()
@@ -229,8 +228,8 @@ enum SoftwareCursorOverlay {
             )
         }
 
-        if distanceBetween(startPoint, constrainedTarget) > 2 {
-            animateMove(from: startPoint, to: constrainedTarget, relativeTo: targetWindow)
+        if distanceBetween(startPoint, targetPoint) > 2 {
+            animateMove(from: startPoint, to: targetPoint, relativeTo: targetWindow)
         }
     }
 
@@ -240,12 +239,11 @@ enum SoftwareCursorOverlay {
         }
 
         configureOrdering(relativeTo: targetWindow)
-        let constrainedTarget = clampTipPosition(targetPoint)
         let now = CACurrentMediaTime()
-        seedVisualDynamicsIfNeeded(at: constrainedTarget, time: now)
-        restingTipPosition = constrainedTarget
+        seedVisualDynamicsIfNeeded(at: targetPoint, time: now)
+        restingTipPosition = targetPoint
         observationPhase = "pulse"
-        animateClickPulse(at: constrainedTarget, clickCount: max(clickCount, 1), mouseButton: mouseButton)
+        animateClickPulse(at: targetPoint, clickCount: max(clickCount, 1), mouseButton: mouseButton)
         startIdleAnimation()
         scheduleHide(after: visualCursorPostInteractionIdleTimeout())
     }
@@ -256,12 +254,11 @@ enum SoftwareCursorOverlay {
         }
 
         configureOrdering(relativeTo: targetWindow)
-        let constrainedTarget = clampTipPosition(targetPoint)
-        restingTipPosition = constrainedTarget
+        restingTipPosition = targetPoint
         observationPhase = "settling"
         placeCursor(
             using: advanceVisualDynamics(
-                toward: constrainedTarget,
+                toward: targetPoint,
                 at: CACurrentMediaTime()
             ),
             clickProgress: 0
@@ -708,17 +705,20 @@ enum SoftwareCursorOverlay {
         )
     }
 
-    private static func advanceVisualDynamics(
+    static func advanceVisualDynamics(
         toward targetTipPosition: CGPoint,
         idleAngleOffset: CGFloat = 0,
         at time: CFTimeInterval
     ) -> CursorVisualRenderState {
-        let clampedTarget = clampTipPosition(targetTipPosition)
-        seedVisualDynamicsIfNeeded(at: clampedTarget, time: time)
+        // 光标尖端必须对齐输入目标；边缘可裁剪光晕，不能为完整显示图形挪动目标。
+        seedVisualDynamicsIfNeeded(at: targetTipPosition, time: time)
 
         let result = CursorVisualDynamicsAnimator.advance(
-            state: visualDynamicsState ?? CursorVisualDynamicsAnimator.state(at: clampedTarget, time: CGFloat(time)),
-            targetTipPosition: clampedTarget,
+            state: visualDynamicsState ?? CursorVisualDynamicsAnimator.state(
+                at: targetTipPosition,
+                time: CGFloat(time)
+            ),
+            targetTipPosition: targetTipPosition,
             targetTime: CGFloat(time),
             idleAngleOffset: idleAngleOffset,
             baseHeading: renderBaseHeading,
@@ -787,23 +787,6 @@ enum SoftwareCursorOverlay {
         } catch {
             // Observation is debug-only and must not affect tool execution.
         }
-    }
-
-    private static func clampTipPosition(_ tipPosition: CGPoint) -> CGPoint {
-        guard let screen = screen(containing: tipPosition) ?? NSScreen.main ?? NSScreen.screens.first else {
-            return tipPosition
-        }
-
-        let visibleFrame = screen.visibleFrame
-        let minX = visibleFrame.minX + artwork.geometry.tipAnchor.x
-        let maxX = visibleFrame.maxX - (artwork.geometry.windowSize.width - artwork.geometry.tipAnchor.x)
-        let minY = visibleFrame.minY + artwork.geometry.tipAnchor.y
-        let maxY = visibleFrame.maxY - (artwork.geometry.windowSize.height - artwork.geometry.tipAnchor.y)
-
-        return CGPoint(
-            x: tipPosition.x.clamped(to: minX...maxX),
-            y: tipPosition.y.clamped(to: minY...maxY)
-        )
     }
 
     private static func screen(containing point: CGPoint) -> NSScreen? {
