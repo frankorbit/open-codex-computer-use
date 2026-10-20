@@ -643,13 +643,25 @@ private struct WindowCapture {
         return WindowCapture(windowID: best.windowID, layer: best.layer, bounds: best.bounds, image: image, imageConfig: config)
     }
 
-    /// WindowServer's hardware window capture first (any Space, covered or not,
-    /// ~10-40ms), ScreenCaptureKit when it is unavailable.
+    /// 单屏内优先硬件截图；出屏、跨屏或覆盖范围异常时使用完整窗口捕获。
     private static func captureImage(windowID: CGWindowID, bounds: CGRect, config: ImageCaptureConfig) -> CGImage? {
-        if let image = TimingLog.measure("snapshot.capture_hw") { SkyLightSPI.shared.hardwareCaptureWindow(windowID) } {
-            return image
+        var count: UInt32 = 0
+        var displays: [CGDirectDisplayID] = []
+        if CGGetActiveDisplayList(0, nil, &count) == .success, count > 0 {
+            displays = Array(repeating: 0, count: Int(count))
+            if CGGetActiveDisplayList(count, &displays, &count) != .success { displays = [] }
         }
-        return TimingLog.measure("snapshot.capture_sck") { captureImageWithScreenCaptureKit(windowID: windowID, bounds: bounds, config: config) }
+        return WindowCaptureGeometry.capture(
+            bounds: bounds, displayBounds: displays.prefix(Int(count)).map { CGDisplayBounds($0) },
+            hardware: {
+                TimingLog.measure("snapshot.capture_hw") { SkyLightSPI.shared.hardwareCaptureWindow(windowID) }
+            },
+            fullWindow: {
+                TimingLog.measure("snapshot.capture_sck") {
+                    captureImageWithScreenCaptureKit(windowID: windowID, bounds: bounds, config: config)
+                }
+            }
+        )
     }
 
     private static func captureImageWithScreenCaptureKit(windowID: CGWindowID, bounds: CGRect, config: ImageCaptureConfig) -> CGImage? {
@@ -659,28 +671,30 @@ private struct WindowCapture {
                 return nil
             }
 
+            let filter = SCContentFilter(desktopIndependentWindow: window)
+            // 使用同一捕获过滤器的尺寸和缩放，避免混用 AppKit 与 CG 的多屏坐标系。
+            guard let pixelSize = WindowCaptureGeometry.fullWindowPixelSize(
+                bounds: bounds, capturedFrame: window.frame,
+                contentSize: filter.contentRect.size, scale: CGFloat(filter.pointPixelScale)
+            ) else { return nil }
             let configuration = SCStreamConfiguration()
-            let scaleFactor = bestEffortScaleFactor(for: bounds)
-            let captureSize = window.frame.isEmpty ? bounds.size : window.frame.size
-            configuration.width = max(1, Int(ceil(captureSize.width * scaleFactor)))
-            configuration.height = max(1, Int(ceil(captureSize.height * scaleFactor)))
+            configuration.width = max(1, Int(pixelSize.width))
+            configuration.height = max(1, Int(pixelSize.height))
             configuration.showsCursor = false
             configuration.scalesToFit = false
             configuration.ignoreShadowsSingleWindow = true
 
-            let filter = SCContentFilter(desktopIndependentWindow: window)
             return try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: configuration)
         }
     }
 
-    private static func bestEffortScaleFactor(for bounds: CGRect) -> CGFloat {
-        NSScreen.screens.first(where: { $0.frame.intersects(bounds) })?.backingScaleFactor
-            ?? NSScreen.main?.backingScaleFactor
-            ?? 1
-    }
-
     func screenshotResult() -> ScreenshotEncodingResult {
-        guard let image else { return ScreenshotEncodingResult(data: nil, note: nil) }
+        guard let image else {
+            return ScreenshotEncodingResult(
+                data: nil,
+                note: "A complete window screenshot is unavailable; coordinate input requires a new complete screenshot"
+            )
+        }
         return encodeScreenshot(for: image, config: imageConfig)
     }
 

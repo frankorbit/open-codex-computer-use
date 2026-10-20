@@ -2034,10 +2034,10 @@ public final class ComputerUseService {
         if snapshot.screenshotData == nil, let note = snapshot.screenshotNote {
             throw ComputerUseError.stateUnavailable(note + "; coordinate input requires a delivered screenshot")
         }
-        return screenshotPixelToWindowPoint(
+        return try WindowCaptureGeometry.windowPoint(
             point,
-            screenshotPixelSize: screenshotPixelSize(snapshot: snapshot),
-            windowBounds: snapshot.windowBounds
+            pixelSize: screenshotPixelSize(snapshot: snapshot),
+            bounds: snapshot.windowBounds
         )
     }
 

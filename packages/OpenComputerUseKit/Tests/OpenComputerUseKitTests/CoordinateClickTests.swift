@@ -215,6 +215,47 @@ final class CoordinateClickServiceTests: XCTestCase {
         XCTAssertEqual(validations, 2)
     }
 
+    func testInvalidScreenshotOrCoordinatesNeverReachInputBackend() throws {
+        for (size, point) in [
+            (CGSize(width: 1280, height: 1042), CGPoint(x: 526, y: 336)),
+            (CGSize(width: 1280, height: 853), CGPoint(x: 1280, y: 10)),
+            (CGSize(width: 1280, height: 853), CGPoint(x: CGFloat.nan, y: 10)),
+            (CGSize(width: 1280, height: 853), CGPoint(x: -1, y: 10)),
+        ] {
+            let state = try snapshot(imageSize: size)
+            var events: [String] = []
+            let backend = CoordinateClickBackend(
+                validateWindow: { _, _ in events.append("validate") },
+                hitTest: { _, _ in events.append("hit"); return nil },
+                performMouse: { _, _, _, _ in events.append("mouse") }
+            )
+            let service = ComputerUseService(snapshots: ["test.canvas": state], coordinateClickBackend: backend)
+            XCTAssertThrowsError(try service.click(
+                app: "test.canvas", elementIndex: nil, x: point.x, y: point.y,
+                clickCount: 1, mouseButton: "left"
+            ))
+            XCTAssertTrue(events.isEmpty)
+        }
+    }
+
+    func testForegroundClickRejectsClippedFrameBeforeActivationAndConsumesSnapshot() throws {
+        let state = try snapshot(imageSize: CGSize(width: 1280, height: 1042))
+        let service = ComputerUseService(
+            snapshots: ["test.canvas": state], snapshotDependencies: .live, allowsForegroundClickOnce: true
+        )
+        let observation = ForegroundClickObservation(
+            app: "test.canvas", observedAt: ProcessInfo.processInfo.systemUptime
+        )
+        XCTAssertThrowsError(try service.clickForegroundOnce(
+            app: "test.canvas", x: 526, y: 336, observation: observation
+        )) { error in
+            XCTAssertTrue(String(describing: error).contains("coverage"))
+        }
+        XCTAssertThrowsError(try service.clickForegroundOnce(
+            app: "test.canvas", x: 526, y: 336, observation: observation
+        ))
+    }
+
     func testServiceFallsBackFromUnavailableHitTestOnlyAfterWindowRevalidation() throws {
         let state = try snapshot(imageSize: CGSize(width: 1280, height: 853))
         for result in [AXError.cannotComplete, .attributeUnsupported, .invalidUIElement, .failure] {
