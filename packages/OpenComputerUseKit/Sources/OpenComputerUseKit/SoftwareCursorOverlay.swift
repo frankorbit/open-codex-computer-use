@@ -542,11 +542,15 @@ enum SoftwareCursorOverlay {
         configureOrdering(relativeTo: nil)
     }
 
+    /// Half of the recovered reference timing, matching the faster travel above.
+    nonisolated static let clickPulseDuration: TimeInterval = 0.08
+    nonisolated static let clickPulseGap: TimeInterval = 0.025
+
     private static func animateClickPulse(at point: CGPoint, clickCount: Int, mouseButton: MouseButtonKind) {
         let pulseBias: CGFloat = mouseButton == .right ? 0.82 : 1
 
         for pulse in 0..<clickCount {
-            let duration = 0.16
+            let duration = clickPulseDuration
             let startTime = CACurrentMediaTime()
 
             while true {
@@ -570,7 +574,7 @@ enum SoftwareCursorOverlay {
             }
 
             if pulse < clickCount - 1 {
-                pause(for: 0.05)
+                pause(for: clickPulseGap)
             }
         }
 

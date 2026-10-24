@@ -331,6 +331,9 @@ enum OfficialCursorMotionModel {
     static let tableA: [CGFloat] = [0.55, 0.8, 1.05]
     static let tableB: [CGFloat] = [0.65, 1.0, 1.35]
     static let closeEnoughTime = CursorMotionProgressAnimator.closeEnoughTime()
+    /// Today plays the recovered spring curve in half its reference time: the
+    /// cursor still shows where input lands, but each move no longer adds ~1.4 s.
+    static let travelTimeScale: CGFloat = 0.5
 
     private static let normalizationEpsilon: CGFloat = 0.001
     private static let sideBiasScale: CGFloat = 0.65
@@ -491,7 +494,7 @@ enum OfficialCursorMotionModel {
     }
 
     static func calibratedTravelDuration(distance _: CGFloat, measurement _: CursorMotionMeasurement) -> CGFloat {
-        closeEnoughTime
+        closeEnoughTime * travelTimeScale
     }
 
     private static func makeCandidate(

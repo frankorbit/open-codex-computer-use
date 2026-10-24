@@ -2375,6 +2375,12 @@ final class OpenComputerUseKitTests: XCTestCase {
         XCTAssertEqual(OfficialCursorMotionModel.closeEnoughTime, 1.429166666666663, accuracy: 0.000_001)
     }
 
+    func testCursorTravelAndClickPulseRunInHalfTheReferenceTime() {
+        XCTAssertEqual(OfficialCursorMotionModel.travelTimeScale, 0.5)
+        XCTAssertEqual(SoftwareCursorOverlay.clickPulseDuration, 0.08, accuracy: 0.000_001)
+        XCTAssertEqual(SoftwareCursorOverlay.clickPulseGap, 0.025, accuracy: 0.000_001)
+    }
+
     func testOfficialCursorMotionTravelDurationUsesRecoveredEndpointLockTiming() {
         let curvedMeasurement = CursorMotionMeasurement(
             length: 1280,
@@ -2386,12 +2392,13 @@ final class OpenComputerUseKitTests: XCTestCase {
 
         XCTAssertEqual(
             OfficialCursorMotionModel.calibratedTravelDuration(distance: 140, measurement: curvedMeasurement),
-            OfficialCursorMotionModel.closeEnoughTime,
+            OfficialCursorMotionModel.closeEnoughTime * 0.5,
             accuracy: 0.000_001
         )
-        XCTAssertGreaterThan(
+        XCTAssertEqual(
             OfficialCursorMotionModel.calibratedTravelDuration(distance: 900, measurement: curvedMeasurement),
-            1.0
+            OfficialCursorMotionModel.calibratedTravelDuration(distance: 140, measurement: curvedMeasurement),
+            accuracy: 0.000_001
         )
     }
 
