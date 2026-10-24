@@ -28,10 +28,17 @@ enum LivePreviewCapture {
     }
 
     static func makeStream(for window: SCWindow) throws -> LivePreviewCaptureSession {
-        try makeStream(filter: SCContentFilter(desktopIndependentWindow: window), size: window.frame.size)
+        let captured = window.owningApplication.map {
+            WindowSharingIndicator.Captured(windowID: window.windowID, pid: $0.processID)
+        }
+        return try makeStream(
+            filter: SCContentFilter(desktopIndependentWindow: window), size: window.frame.size, captured: captured
+        )
     }
 
-    static func makeStream(filter: SCContentFilter, size: CGSize) throws -> LivePreviewCaptureSession {
+    static func makeStream(
+        filter: SCContentFilter, size: CGSize, captured: WindowSharingIndicator.Captured? = nil
+    ) throws -> LivePreviewCaptureSession {
         // 只镜像已绑定窗口，即使被其他 App 遮住也不把遮挡者的内容带入预览。
         let events = AsyncStream<PreviewFrameEvent>.makeStream(bufferingPolicy: .bufferingNewest(1))
         let sink = PreviewFrameSink(continuation: events.continuation)
@@ -41,7 +48,7 @@ enum LivePreviewCapture {
             delegate: sink
         )
         try stream.addStreamOutput(sink, type: .screen, sampleHandlerQueue: DispatchQueue(label: "ocu.preview.frames"))
-        return LivePreviewCaptureSession(stream: stream, events: events.stream, sink: sink)
+        return LivePreviewCaptureSession(stream: stream, events: events.stream, sink: sink, captured: captured)
     }
 
     static func currentBounds(
@@ -71,6 +78,8 @@ struct LivePreviewCaptureSession {
     let stream: SCStream
     let events: AsyncStream<PreviewFrameEvent>
     let sink: PreviewFrameSink
+    /// The single window this stream captures; macOS marks it with a sharing indicator.
+    var captured: WindowSharingIndicator.Captured? = nil
 }
 
 // MARK: - PreviewFrameEvent

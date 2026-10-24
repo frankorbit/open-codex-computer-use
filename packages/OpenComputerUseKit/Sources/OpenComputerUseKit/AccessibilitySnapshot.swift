@@ -465,6 +465,8 @@ enum SnapshotBuilder {
     private static func isUsableWindowElement(_ element: AXUIElement) -> Bool {
         stringValue(of: element, attribute: kAXRoleAttribute) == kAXWindowRole as String
             && boolValue(of: element, attribute: kAXMinimizedAttribute) != true
+            // 被采集窗口的共享指示器可能成为应用的聚焦窗口，但它不是应用内容。
+            && !WindowSharingIndicator.isIndicator(axWindow: element)
     }
 
     private static func preferredFocusedElement(appElement: AXUIElement, appPID: pid_t, focusedApplication: AXUIElement?, systemWide: AXUIElement) -> AXUIElement? {

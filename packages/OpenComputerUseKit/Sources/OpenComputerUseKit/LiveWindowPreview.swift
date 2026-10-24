@@ -212,6 +212,10 @@ final class LiveWindowPreview: NSObject {
         // 取消、建流失败或切窗时也要保留回调接收者，直到消费循环和清理退出。
         defer { withExtendedLifetime(session) {} }
         do {
+            // 先登记再开流：指示器随流出现，读取窗口时必须已经能识别它。
+            if let captured = session.captured {
+                WindowSharingIndicator.captureStarted(windowID: captured.windowID, pid: captured.pid)
+            }
             try await session.stream.startCapture()
             guard !Task.isCancelled, state.accepts(generation) else {
                 await Self.stopCapture(session)
@@ -362,6 +366,10 @@ extension LiveWindowPreview {
             // 不记录屏幕正文；系统可能已经先行终止流。
             Logger(subsystem: "ai.today.ocu", category: "preview")
                 .debug("capture_cleanup code=\((error as NSError).code)")
+        }
+        // 流停止后指示器随之消失，再取消登记。
+        if let captured = session.captured {
+            WindowSharingIndicator.captureEnded(windowID: captured.windowID, pid: captured.pid)
         }
     }
 

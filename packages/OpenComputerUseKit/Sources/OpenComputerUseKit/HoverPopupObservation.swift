@@ -105,7 +105,17 @@ struct HoverPopupObservation {
                     && !independentWindowIDs.contains(window.windowID)
                     && !independentWindowBounds.contains(window.bounds)
                     && HoverPopupObservation.geometricallyRelated(window.bounds, rootBounds)
+                    && !isSharingIndicator(window)
             }
+        }
+
+        /// The window sharing indicator of a streamed window is not an app popup.
+        func isSharingIndicator(
+            _ window: Window, captured: Set<WindowSharingIndicator.Captured> = WindowSharingIndicator.capturedWindows
+        ) -> Bool {
+            WindowSharingIndicator.isIndicator(
+                windowID: window.windowID, pid: window.pid, bounds: window.bounds, layer: window.layer, captured: captured
+            ) { id in windows.first(where: { $0.windowID == id })?.bounds }
         }
     }
 

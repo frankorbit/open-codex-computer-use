@@ -68,14 +68,16 @@ func validateCoordinateWindow(
     // 后台定向输入不使用前台命中结果；仍检查同 App、同 Space 的上层窗口。
     let evidence = try backgroundWindows((current[kCGWindowIsOnscreen as String] as? NSNumber)?.boolValue == true)
     try validateCoordinateObstructions(
-        evidence, windowID: windowID, pid: pid, point: point, spacesForWindow: spacesForWindow
+        evidence, windowID: windowID, pid: pid, point: point, spacesForWindow: spacesForWindow,
+        isSharingIndicator: { WindowSharingIndicator.isIndicator($0, windows: windows) }
     )
     accepted = true
 }
 
-private func validateCoordinateObstructions(
+func validateCoordinateObstructions(
     _ evidence: CoordinateWindowObstructions, windowID: CGWindowID, pid: pid_t, point: CGPoint,
-    spacesForWindow: (CGWindowID) -> [UInt64]?
+    spacesForWindow: (CGWindowID) -> [UInt64]?,
+    isSharingIndicator: ([String: Any]) -> Bool = { _ in false }
 ) throws {
     for above in evidence.windows {
         guard let owner = above[kCGWindowOwnerPID as String] as? NSNumber else {
@@ -83,6 +85,8 @@ private func validateCoordinateObstructions(
         }
         if owner.int32Value == getpid() { continue }
         if owner.int32Value != pid { continue }
+        // 系统为被采集窗口加的共享指示器不接收应用输入，不算遮挡。
+        if isSharingIndicator(above) { continue }
         guard (above[kCGWindowIsOnscreen as String] as? NSNumber)?.boolValue == true,
               (above[kCGWindowAlpha as String] as? NSNumber)?.doubleValue ?? 1 > 0 else { continue }
         guard let aboveBounds = coordinateWindowBounds(above) else {
