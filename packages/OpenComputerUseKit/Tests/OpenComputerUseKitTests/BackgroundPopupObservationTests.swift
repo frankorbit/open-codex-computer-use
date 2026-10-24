@@ -235,7 +235,7 @@ final class BackgroundPopupObservationTests: XCTestCase {
             snapshots: ["test.popup": snapshot],
             snapshotDependencies: SnapshotDependencies(
                 resolve: { _ in XCTFail("must not resolve"); return snapshot.app },
-                build: { _, _, _, policy in XCTAssertEqual(policy, .readOnly); return snapshot }
+                build: { _, _, _, policy, _ in XCTAssertEqual(policy, .readOnly); return snapshot }
             )
         )
         // 使用真实 capture；缺少 AXWindow 时必须明确说明限制，且无需调用 GUI。

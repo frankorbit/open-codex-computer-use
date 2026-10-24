@@ -148,6 +148,7 @@ public struct AppSnapshot {
 
     let elements: [Int: ElementRecord]
     var screenshotNote: String? = nil
+    var observation: SnapshotObservationOptions = .defaults
 
     public var renderedText: String {
         renderedText(style: .fullState)
@@ -161,6 +162,9 @@ public struct AppSnapshot {
         lines.append("App=\(appReference) (pid \(app.pid))")
         lines.append("Window: \(quoted(displayTitle)), App: \(app.name).")
         lines.append(contentsOf: treeLines)
+        if !observation.includeAX {
+            lines.append(SnapshotObservationOptions.accessibilityOmittedNote)
+        }
 
         if let selectedText, !selectedText.isEmpty {
             lines.append("")
@@ -188,11 +192,13 @@ enum SnapshotBuilder {
         for app: RunningAppDescriptor,
         textLimit: SnapshotTextLimit = .defaults,
         treeLimits: AccessibilityTreeLimits = .defaults,
-        recoveryPolicy: SnapshotRecoveryPolicy = .allowActivation
+        recoveryPolicy: SnapshotRecoveryPolicy = .allowActivation,
+        observation: SnapshotObservationOptions = .defaults
     ) throws -> AppSnapshot {
         let executionPolicy = try ExecutionPolicy.current()
+        try observation.validate()
         if app.name == FixtureBridge.appName, let fixtureState = try FixtureBridge.readState() {
-            return buildFixtureSnapshot(app: app, state: fixtureState)
+            return buildFixtureSnapshot(app: app, state: fixtureState, observation: observation)
         }
 
         let permissions = PermissionDiagnostics.current()
@@ -201,8 +207,8 @@ enum SnapshotBuilder {
         }
 
         let appElement = AXUIElementCreateApplication(app.pid)
-        let lazyWebAccessibility = enableBestEffortAccessibilityModes(appElement)
-            || appHasLazyWebAccessibility(bundleURL: app.runningApplication.bundleURL)
+        let lazyWebAccessibility = observation.includeAX && (enableBestEffortAccessibilityModes(appElement)
+            || appHasLazyWebAccessibility(bundleURL: app.runningApplication.bundleURL))
         let systemWide = AXUIElementCreateSystemWide()
         var focusedApplication = copyElement(systemWide, attribute: kAXFocusedApplicationAttribute)
         var focusedWindow = preferredFocusedWindow(appElement: appElement, appPID: app.pid, focusedApplication: focusedApplication, systemWide: systemWide)
@@ -225,8 +231,8 @@ enum SnapshotBuilder {
         // the tree, the capture and every element frame refer to the same window;
         // the title/area heuristics remain the fallback.
         var windowCapture = TimingLog.measure("snapshot.window_capture") {
-            WindowCapture.resolve(for: app.pid, exactWindowID: SkyLightSPI.shared.windowID(for: rootWindow))
-                ?? WindowCapture.resolve(for: app.pid, titleHint: windowTitle)
+            WindowCapture.resolve(for: app.pid, exactWindowID: SkyLightSPI.shared.windowID(for: rootWindow), includeImage: observation.includeScreenshot)
+                ?? WindowCapture.resolve(for: app.pid, titleHint: windowTitle, includeImage: observation.includeScreenshot)
         }
         if windowCapture == nil,
            performWindowRecovery(policy: executionPolicy, requested: recoveryPolicy, recover: {
@@ -236,8 +242,8 @@ enum SnapshotBuilder {
             if let recoveredWindow = preferredFocusedWindow(appElement: appElement, appPID: app.pid, focusedApplication: focusedApplication, systemWide: systemWide) {
                 rootWindow = recoveredWindow
                 windowTitle = stringValue(of: recoveredWindow, attribute: kAXTitleAttribute)
-                windowCapture = WindowCapture.resolve(for: app.pid, exactWindowID: SkyLightSPI.shared.windowID(for: recoveredWindow))
-                    ?? WindowCapture.resolve(for: app.pid, titleHint: windowTitle)
+                windowCapture = WindowCapture.resolve(for: app.pid, exactWindowID: SkyLightSPI.shared.windowID(for: recoveredWindow), includeImage: observation.includeScreenshot)
+                    ?? WindowCapture.resolve(for: app.pid, titleHint: windowTitle, includeImage: observation.includeScreenshot)
             }
         }
 
@@ -255,7 +261,8 @@ enum SnapshotBuilder {
             systemWide: systemWide,
             textLimit: textLimit,
             treeLimits: treeLimits,
-            lazyWebAccessibility: lazyWebAccessibility
+            lazyWebAccessibility: lazyWebAccessibility,
+            observation: observation
         )
     }
 
@@ -269,11 +276,21 @@ enum SnapshotBuilder {
         systemWide: AXUIElement,
         textLimit: SnapshotTextLimit,
         treeLimits: AccessibilityTreeLimits,
-        lazyWebAccessibility: Bool
+        lazyWebAccessibility: Bool,
+        observation: SnapshotObservationOptions
     ) -> AppSnapshot {
         let windowBounds = windowCapture.bounds
-        let screenshot = windowCapture.screenshotResult()
+        let screenshot = observation.includeScreenshot ? windowCapture.screenshotResult()
+            : ScreenshotEncodingResult(data: nil, note: SnapshotObservationOptions.screenshotOmittedNote)
         let screenshotData = screenshot.data
+        guard observation.includeAX else {
+            return AppSnapshot(app: app, windowTitle: windowTitle, windowBounds: windowBounds,
+                               targetWindowID: windowCapture.windowID, targetWindowLayer: windowCapture.layer,
+                               screenshotData: screenshotData, mode: .accessibility, treeLines: [],
+                               focusedSummary: nil, focusedElement: nil, selectedText: nil,
+                               windowElement: rootElement, elements: [:], screenshotNote: screenshot.note,
+                               observation: observation)
+        }
         let focusedElement = preferredFocusedElement(appElement: appElement, appPID: app.pid, focusedApplication: focusedApplication, systemWide: systemWide)
         let selectedText = focusedElement.flatMap { copySelectedText($0, textLimit: textLimit) }
         func renderWindowAndActiveMenus() -> TreeRenderer {
@@ -345,7 +362,8 @@ enum SnapshotBuilder {
             selectedText: selectedText,
             windowElement: rootElement,
             elements: renderer.records,
-            screenshotNote: screenshot.note
+            screenshotNote: screenshot.note,
+            observation: observation
         )
     }
 
@@ -459,14 +477,15 @@ enum SnapshotBuilder {
         return copyElement(appElement, attribute: kAXFocusedUIElementAttribute)
     }
 
-    private static func buildFixtureSnapshot(app: RunningAppDescriptor, state: FixtureAppState) -> AppSnapshot {
+    static func buildFixtureSnapshot(app: RunningAppDescriptor, state: FixtureAppState,
+                                     observation: SnapshotObservationOptions = .defaults) -> AppSnapshot {
         var lines: [String] = []
 
         var records: [Int: ElementRecord] = [:]
         let focusedIdentifier = state.focusedIdentifier
         var focusedSummary: String?
 
-        for element in state.elements.sorted(by: { $0.index < $1.index }) {
+        for element in (observation.includeAX ? state.elements.sorted(by: { $0.index < $1.index }) : []) {
             let titleSegment = element.title.map { " \($0)" } ?? ""
             let valueSegment = element.value.map { " Value: \($0)" } ?? ""
             let actionsSegment = element.actions.isEmpty ? "" : " Secondary Actions: \(element.actions.joined(separator: ", "))"
@@ -502,7 +521,9 @@ enum SnapshotBuilder {
             focusedElement: nil,
             selectedText: nil,
             windowElement: nil,
-            elements: records
+            elements: records,
+            screenshotNote: observation.includeScreenshot ? nil : SnapshotObservationOptions.screenshotOmittedNote,
+            observation: observation
         )
     }
 }

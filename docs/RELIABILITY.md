@@ -19,6 +19,7 @@
 - macOS 其他 Desktop 实机回归（需要第二个 Desktop，测试会短暂切换 Space 启动目标）：`OPEN_COMPUTER_USE_RUN_CROSS_SPACE_LIVE_TEST=1 swift test --filter CrossSpaceLiveTests`
 - Linux runtime：`(cd apps/OpenComputerUseLinux && go test ./...)`、`./scripts/build-open-computer-use-linux.sh --arch arm64`
 - Windows runtime：`(cd apps/OpenComputerUseWindows && go test ./...)`、`./scripts/build-open-computer-use-windows.sh --arch amd64`；截图相关变更还要在 Windows 交互桌面验证正常窗口有 image、1x1/minimized/cloaked 窗口无 image。
+- Windows 观察实测：`pwsh -File scripts/tests/windows-observation-smoke.ps1 -NativePath /path/to/open-computer-use.exe`，使用独立 WPF 窗口走真实 UIA / native MCP，验证采集开关、索引与截图边界；专用 PR 工作流见 [CI 说明](CICD.md)。
 - 本地诊断：
   - `open-computer-use doctor`
   - `open-computer-use snapshot <app>`

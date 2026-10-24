@@ -98,6 +98,8 @@ public enum ToolDefinitions {
             annotations: defaultAnnotations(),
             inputSchema: objectSchema(
                 properties: [
+                    "include_ax": ["type": "boolean", "default": true, "description": "Include accessibility tree, focus and selection. False skips collection and invalidates previous element indexes; read AX again before element actions."],
+                    "include_screenshot": ["type": "boolean", "default": true, "description": "Capture and return a screenshot. False skips capture and encoding; screenshot-coordinate actions require a fresh screenshot."],
                     "app": stringProperty(description: "App name or bundle identifier"),
                     "initialize": ["type": "boolean", "description": "Bind the app, opening it once if not running or without an observable window. Defaults to true for keep placement, false for explicit window placement. Set false for observation only."],
                     "text_limit": textLimitProperty(description: "Maximum text characters to return. Use \"max\" for full text. Defaults to 500."),

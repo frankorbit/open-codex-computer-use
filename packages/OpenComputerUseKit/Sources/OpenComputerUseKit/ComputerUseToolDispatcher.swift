@@ -136,7 +136,11 @@ public final class ComputerUseToolDispatcher {
                     maxDepth: try optionalPositiveInt("max_tree_depth", in: arguments)
                 ),
                 windowPlacement: placement,
-                initialize: try optionalBool("initialize", in: arguments) ?? (placement == .keep)
+                initialize: try optionalBool("initialize", in: arguments) ?? (placement == .keep),
+                observation: SnapshotObservationOptions(
+                    includeAX: try strictObservationBool("include_ax", in: arguments),
+                    includeScreenshot: try strictObservationBool("include_screenshot", in: arguments)
+                )
             )
         case "click_foreground_once":
             return try service.clickForegroundOnce(
@@ -227,6 +231,14 @@ public final class ComputerUseToolDispatcher {
         }
 
         return value
+    }
+
+    private func strictObservationBool(_ key: String, in arguments: [String: Any]) throws -> Bool {
+        guard let value = arguments[key] else { return true }
+        guard let number = value as? NSNumber, CFGetTypeID(number) == CFBooleanGetTypeID() else {
+            throw ComputerUseError.invalidArguments("\(key) must be a boolean")
+        }
+        return number.boolValue
     }
 
     /// Machine-readable matches with explicit completeness metadata.

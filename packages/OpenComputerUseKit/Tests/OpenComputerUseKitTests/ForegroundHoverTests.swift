@@ -137,7 +137,7 @@ final class ForegroundHoverTests: XCTestCase {
             resolve: { _ in
                 XCTFail("Input must not resolve a new target"); throw ComputerUseError.message("unexpected")
             },
-            build: { _, _, _, _ in builds += 1; throw ComputerUseError.message("unexpected") }
+            build: { _, _, _, _, _ in builds += 1; throw ComputerUseError.message("unexpected") }
         ))
         XCTAssertThrowsError(try service.hover(app: "test.editor", arguments: ["element_index": "1"]))
         XCTAssertThrowsError(try service.hover(app: "test.editor", arguments: ["x": 10, "y": 20]))

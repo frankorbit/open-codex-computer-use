@@ -43,6 +43,13 @@ public struct ToolCallResult: @unchecked Sendable {
         content.first(where: { $0.dictionary["type"] as? String == "text" })?.dictionary["text"] as? String
     }
 
+    /// Plain-text CLI output includes observation notes but never image bytes.
+    public var textContent: String {
+        content.compactMap { item in
+            item.dictionary["type"] as? String == "text" ? item.dictionary["text"] as? String : nil
+        }.joined(separator: "\n")
+    }
+
     public var asDictionary: [String: Any] {
         [
             "content": content.map(\.dictionary),

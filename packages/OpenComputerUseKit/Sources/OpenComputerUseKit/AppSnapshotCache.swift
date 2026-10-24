@@ -37,7 +37,7 @@ struct SnapshotObservationBinding {
 
 struct SnapshotDependencies {
     var resolve: (String) throws -> RunningAppDescriptor
-    var build: (RunningAppDescriptor, SnapshotTextLimit, AccessibilityTreeLimits, SnapshotRecoveryPolicy) throws
+    var build: (RunningAppDescriptor, SnapshotTextLimit, AccessibilityTreeLimits, SnapshotRecoveryPolicy, SnapshotObservationOptions) throws
         -> AppSnapshot
     var processIdentity: (pid_t) -> SnapshotProcessIdentity? = SnapshotProcessIdentity.current
     var bindingIdentity: (RunningAppDescriptor) -> SnapshotProcessIdentity? = SnapshotProcessIdentity.bound
@@ -57,12 +57,13 @@ struct SnapshotDependencies {
     static var live: SnapshotDependencies {
         SnapshotDependencies(
             resolve: AppDiscovery.resolve,
-            build: { app, textLimit, treeLimits, recoveryPolicy in
+            build: { app, textLimit, treeLimits, recoveryPolicy, observation in
                 try SnapshotBuilder.build(
                     for: app,
                     textLimit: textLimit,
                     treeLimits: treeLimits,
-                    recoveryPolicy: recoveryPolicy
+                    recoveryPolicy: recoveryPolicy,
+                    observation: observation
                 )
             }
         )

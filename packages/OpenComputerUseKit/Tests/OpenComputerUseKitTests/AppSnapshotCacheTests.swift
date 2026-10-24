@@ -84,7 +84,7 @@ final class AppSnapshotCacheTests: XCTestCase {
             snapshots: ["shared": original],
             snapshotDependencies: .init(
                 resolve: { _ in resolutions += 1; return replacement.app },
-                build: { app, _, _, policy in
+                build: { app, _, _, policy, _ in
                     XCTAssertEqual(policy, .readOnly)
                     builds.append(app.bundleIdentifier)
                     if app.bundleIdentifier == original.app.bundleIdentifier {

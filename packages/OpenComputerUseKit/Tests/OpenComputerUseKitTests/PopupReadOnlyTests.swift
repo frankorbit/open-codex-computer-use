@@ -55,7 +55,7 @@ final class PopupReadOnlyTests: XCTestCase {
             snapshots: ["test.popup": snapshot],
             snapshotDependencies: SnapshotDependencies(
                 resolve: { _ in app },
-                build: { _, _, _, policy in
+                build: { _, _, _, policy, _ in
                     XCTAssertEqual(policy, .readOnly)
                     readbacks += 1
                     return snapshot
@@ -103,7 +103,7 @@ final class PopupReadOnlyTests: XCTestCase {
             snapshots: ["test.popup": snapshot],
             snapshotDependencies: SnapshotDependencies(
                 resolve: { _ in snapshot.app },
-                build: { _, _, _, policy in
+                build: { _, _, _, policy, _ in
                     XCTAssertEqual(policy, .readOnly)
                     return snapshot
                 },
@@ -145,7 +145,7 @@ final class PopupReadOnlyTests: XCTestCase {
         let service = ComputerUseService(
             snapshots: ["test.popup": snapshot],
             snapshotDependencies: .init(
-                resolve: { _ in snapshot.app }, build: { _, _, _, _ in snapshot },
+                resolve: { _ in snapshot.app }, build: { _, _, _, _, _ in snapshot },
                 processIdentity: popupTestProcessIdentity,
                 bindingIdentity: popupTestBindingIdentity,
                 captureHoverPopups: { _, _ in
@@ -189,7 +189,7 @@ extension PopupReadOnlyTests {
                         runningApplication: .current
                     )
                 },
-                build: { app, _, _, policy in
+                build: { app, _, _, policy, _ in
                     XCTAssertEqual(app.pid, old.app.pid)
                     XCTAssertEqual(app.bundleIdentifier, old.app.bundleIdentifier)
                     XCTAssertEqual(policy, .readOnly)
@@ -232,7 +232,7 @@ extension PopupReadOnlyTests {
             snapshots: ["test.popup": old],
             snapshotDependencies: .init(
                 resolve: { _ in resolutions += 1; return old.app },
-                build: { app, _, _, policy in
+                build: { app, _, _, policy, _ in
                     XCTAssertEqual(app.pid, old.app.pid)
                     XCTAssertEqual(policy, .readOnly)
                     builds += 1
@@ -281,7 +281,7 @@ extension PopupReadOnlyTests {
                 let service = ComputerUseService(
                     snapshotDependencies: .init(
                         resolve: { _ in snapshot.app },
-                        build: { _, _, _, policy in
+                        build: { _, _, _, policy, _ in
                             XCTAssertEqual(policy, .readOnly)
                             return snapshot
                         },

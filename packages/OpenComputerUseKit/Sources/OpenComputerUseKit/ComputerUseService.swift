@@ -633,7 +633,7 @@ public final class ComputerUseService {
             let fresh = try observeWithoutActivation {
                 // 恢复的每次尝试前后复核 PID 与启动时间；退出或 PID 复用均拒绝。
                 try recoveryBinding?.validate(current: snapshotDependencies.processIdentity(app.pid))
-                let snapshot = try snapshotDependencies.build(app, .defaults, .defaults, .readOnly)
+                let snapshot = try snapshotDependencies.build(app, .defaults, .defaults, .readOnly, .defaults)
                 try recoveryBinding?.validate(current: snapshotDependencies.processIdentity(app.pid))
                 return snapshot
             }
@@ -723,14 +723,15 @@ public final class ComputerUseService {
     private func initializeAppSnapshot(
         for query: String,
         textLimit: SnapshotTextLimit,
-        treeLimits: AccessibilityTreeLimits
+        treeLimits: AccessibilityTreeLimits,
+        observation: SnapshotObservationOptions
     ) throws -> AppSnapshot {
         hoverPopupCache.clear()
         let observationError: ComputerUseError
         do {
             // 已有可观察窗口直接绑定；只有无进程或明确无窗口才请求系统打开。
             return try observeWithoutActivation {
-                try refreshSnapshot(for: query, textLimit: textLimit, treeLimits: treeLimits, explicitObservation: true)
+                try refreshSnapshot(for: query, textLimit: textLimit, treeLimits: treeLimits, explicitObservation: true, observation: observation)
             }
         } catch let error as ComputerUseError {
             switch error {
@@ -764,7 +765,7 @@ public final class ComputerUseService {
         let snapshot = try observeWithoutActivation {
             try Task.checkCancellation()
             try binding.validate(current: snapshotDependencies.processIdentity(app.pid))
-            return try snapshotDependencies.build(app, textLimit, treeLimits, .readOnly)
+            return try snapshotDependencies.build(app, textLimit, treeLimits, .readOnly, observation)
         }
         try Task.checkCancellation()
         try binding.validate(current: snapshotDependencies.processIdentity(app.pid))
@@ -777,8 +778,11 @@ public final class ComputerUseService {
         textLimit: SnapshotTextLimit = .defaults,
         treeLimits: AccessibilityTreeLimits = .defaults,
         windowPlacement: WindowPlacement = .keep,
-        initialize: Bool = false
+        initialize: Bool = false,
+        observation: SnapshotObservationOptions = .defaults
     ) throws -> ToolCallResult {
+        // 采集选项非法时，在解析应用或触碰缓存前失败。
+        try observation.validate()
         _ = try ExecutionPolicy.current()
         guard !initialize || windowPlacement == .keep else {
             throw ComputerUseError.invalidArguments("initialize cannot be combined with window_placement")
@@ -793,17 +797,17 @@ public final class ComputerUseService {
             }
         }
         if initialize {
-            let snapshot = try initializeAppSnapshot(for: query, textLimit: textLimit, treeLimits: treeLimits)
-            snapshotCache.recordObservation(snapshot, for: query)
+            let snapshot = try initializeAppSnapshot(for: query, textLimit: textLimit, treeLimits: treeLimits, observation: observation)
+            recordExplicitObservation(snapshot, for: query)
             foregroundObservation = ForegroundClickObservation(app: query, observedAt: ProcessInfo.processInfo.systemUptime)
             observationSucceeded = true
             return snapshotResult(for: snapshot, style: .fullState)
         }
         guard windowPlacement != .keep else {
             let snapshot = try observeWithoutActivation {
-                try refreshSnapshot(for: query, textLimit: textLimit, treeLimits: treeLimits, explicitObservation: true)
+                try refreshSnapshot(for: query, textLimit: textLimit, treeLimits: treeLimits, explicitObservation: true, observation: observation)
             }
-            snapshotCache.recordObservation(snapshot, for: query)
+            recordExplicitObservation(snapshot, for: query)
             foregroundObservation = ForegroundClickObservation(app: query, observedAt: ProcessInfo.processInfo.systemUptime)
             observationSucceeded = true
             return snapshotResult(for: snapshot, style: .fullState)
@@ -826,11 +830,20 @@ public final class ComputerUseService {
             break
         }
 
-        let finalSnapshot = try refreshSnapshot(for: query, textLimit: textLimit, treeLimits: treeLimits, explicitObservation: true)
-        snapshotCache.recordObservation(finalSnapshot, for: query)
+        // 放置前的中间读取只用于定位窗口，仍按完整采集；最终交付的观察按请求的选项采集。
+        let finalSnapshot = try refreshSnapshot(for: query, textLimit: textLimit, treeLimits: treeLimits, explicitObservation: true, observation: observation)
+        recordExplicitObservation(finalSnapshot, for: query)
         foregroundObservation = ForegroundClickObservation(app: query, observedAt: ProcessInfo.processInfo.systemUptime)
         observationSucceeded = true
         return snapshotResult(for: finalSnapshot, style: .fullState)
+    }
+
+    /// 不含 AX 的观察使该进程此前的快照编号与查询编号一并失效。
+    private func recordExplicitObservation(_ snapshot: AppSnapshot, for query: String) {
+        snapshotCache.recordObservation(snapshot, for: query)
+        if !snapshot.observation.includeAX {
+            targetedElements.removeAll(forPIDs: [snapshot.app.pid])
+        }
     }
 
     // 在参数校验前消费；错误参数、其他操作或重复请求也不能保留资格。
@@ -885,6 +898,9 @@ public final class ComputerUseService {
                 .invalidArguments("click requires mouse_button left/right/middle and a positive click_count")
         }
         let snapshot = try snapshotForAction(app: query, elementIndex: elementIndex)
+        if elementIndex == nil, !snapshot.observation.includeScreenshot {
+            throw ComputerUseError.stateUnavailable(SnapshotObservationOptions.screenshotOmittedNote + "; request a screenshot before screenshot-coordinate actions")
+        }
         InputDiagnostics.event("click_target", [
             "requested_method": clickMethod.rawValue, "target_pid": String(snapshot.app.pid),
             "window_id": snapshot.targetWindowID.map(String.init) ?? "unknown",
@@ -1115,6 +1131,9 @@ public final class ComputerUseService {
 
     public func drag(app query: String, fromX: Double, fromY: Double, toX: Double, toY: Double) throws -> ToolCallResult {
         let snapshot = try currentSnapshot(for: query)
+        guard snapshot.observation.includeScreenshot else {
+            throw ComputerUseError.stateUnavailable(SnapshotObservationOptions.screenshotOmittedNote + "; request a screenshot before screenshot-coordinate actions")
+        }
         if snapshot.mode == .fixture {
             try FixtureBridge.post(FixtureCommand(kind: "drag", identifier: "fixture-drag-pad", x: fromX, y: fromY, toX: toX, toY: toY))
             Thread.sleep(forTimeInterval: 0.15)
@@ -1364,7 +1383,8 @@ public final class ComputerUseService {
         for query: String,
         textLimit: SnapshotTextLimit = .defaults,
         treeLimits: AccessibilityTreeLimits = .defaults,
-        explicitObservation: Bool = false
+        explicitObservation: Bool = false,
+        observation: SnapshotObservationOptions = .defaults
     ) throws -> AppSnapshot {
         hoverPopupCache.clear()
         var resolvedApp: RunningAppDescriptor?
@@ -1379,7 +1399,7 @@ public final class ComputerUseService {
             }
             resolvedApp = app
             // 所有 service 回读都只观察，不能沿旧动作策略恢复焦点或重开窗口。
-            let snapshot = try snapshotDependencies.build(app, textLimit, treeLimits, .readOnly)
+            let snapshot = try snapshotDependencies.build(app, textLimit, treeLimits, .readOnly, observation)
             if !explicitObservation {
                 try snapshotCache.recordReadBack(snapshot, for: query)
             }

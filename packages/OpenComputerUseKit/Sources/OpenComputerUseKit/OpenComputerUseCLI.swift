@@ -5,7 +5,7 @@ public enum OpenComputerUseCLICommand: Equatable {
     case mcp
     case doctor
     case listApps
-    case snapshot(app: String, textLimit: SnapshotTextLimit = .defaults, treeLimits: AccessibilityTreeLimits = .defaults)
+    case snapshot(app: String, textLimit: SnapshotTextLimit = .defaults, treeLimits: AccessibilityTreeLimits = .defaults, observation: SnapshotObservationOptions = .defaults)
     case call(OpenComputerUseCallInvocation)
     case turnEnded(payload: String?)
     case help(command: String?)
@@ -148,12 +148,14 @@ public func openComputerUseHelpText(command: String? = nil) -> String {
     case "snapshot":
         return """
         Usage:
-          open-computer-use snapshot [--text-limit <positive-int|max>] [--max-tree-nodes <positive-int>] [--max-tree-depth <positive-int>] <app>
+          open-computer-use snapshot [--include-ax true|false] [--include-screenshot true|false] [--text-limit <positive-int|max>] [--max-tree-nodes <positive-int>] [--max-tree-depth <positive-int>] <app>
 
         Arguments:
           <app>                App name or bundle identifier to inspect.
 
         Options:
+          --include-ax         Include AX/focus/selection (true by default). False invalidates prior indexes.
+          --include-screenshot Include screenshot capture (true by default). At least one channel must be true.
           --text-limit         Override the default 500 character text limit. Use `max` for full text.
           --max-tree-nodes     Override the default 1200 node accessibility tree budget.
           --max-tree-depth     Override the default 64 level accessibility tree depth.
@@ -274,6 +276,7 @@ private func parseSnapshot(arguments: [String]) throws -> OpenComputerUseCLIComm
         return .help(command: "snapshot")
     }
 
+    var observation = SnapshotObservationOptions.defaults
     var app: String?
     var textLimit = SnapshotTextLimit.defaults
     var maxTreeNodes: Int?
@@ -283,6 +286,13 @@ private func parseSnapshot(arguments: [String]) throws -> OpenComputerUseCLIComm
     while index < arguments.count {
         let argument = arguments[index]
         switch argument {
+        case "--include-ax", "--include-screenshot":
+            index += 1
+            guard index < arguments.count, let value = Bool(arguments[index].lowercased()) else {
+                throw OpenComputerUseCLIError(message: "\(argument) requires true or false", helpCommand: "snapshot")
+            }
+            if argument == "--include-ax" { observation.includeAX = value }
+            else { observation.includeScreenshot = value }
         case "--text-limit":
             index += 1
             guard index < arguments.count else {
@@ -321,13 +331,17 @@ private func parseSnapshot(arguments: [String]) throws -> OpenComputerUseCLIComm
         throw OpenComputerUseCLIError(message: "snapshot requires an app name or bundle identifier", helpCommand: "snapshot")
     }
 
+    guard observation.includeAX || observation.includeScreenshot else {
+        throw OpenComputerUseCLIError(message: "At least one of include_ax or include_screenshot must be true", helpCommand: "snapshot")
+    }
     return .snapshot(
         app: app,
         textLimit: textLimit,
         treeLimits: AccessibilityTreeLimits.defaults.replacing(
             maxNodeCount: maxTreeNodes,
             maxDepth: maxTreeDepth
-        )
+        ),
+        observation: observation
     )
 }
 

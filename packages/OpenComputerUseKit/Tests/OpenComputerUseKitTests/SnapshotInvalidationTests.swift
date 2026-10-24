@@ -335,7 +335,7 @@ private final class SnapshotHarness {
                 }
                 return app
             },
-            build: { app, _, _, policy in
+            build: { app, _, _, policy, _ in
                 self.builtPIDs.append(app.pid)
                 self.policies.append(policy)
                 if let failure = self.buildFailures[app.pid] { throw failure }

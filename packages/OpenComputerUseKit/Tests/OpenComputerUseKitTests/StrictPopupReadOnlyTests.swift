@@ -52,7 +52,7 @@ final class StrictPopupReadOnlyTests: XCTestCase {
                 XCTFail("must not resolve another target, including after invalidation")
                 throw ComputerUseError.message("unexpected")
             },
-            build: { app, _, _, policy in
+            build: { app, _, _, policy, _ in
                 XCTAssertEqual(app.pid, snapshot.app.pid)
                 XCTAssertEqual(app.bundleIdentifier, snapshot.app.bundleIdentifier)
                 XCTAssertEqual(policy, .readOnly)

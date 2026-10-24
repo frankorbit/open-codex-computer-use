@@ -283,7 +283,7 @@ final class OpeningHarness {
                 if let failure = self.resolveFailure { throw failure }
                 return self.app
             },
-            build: { app, _, _, policy in
+            build: { app, _, _, policy, _ in
                 self.builds += 1
                 self.builtPIDs.append(app.pid)
                 self.policies.append(policy)

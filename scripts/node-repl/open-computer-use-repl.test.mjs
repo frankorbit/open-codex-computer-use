@@ -102,6 +102,42 @@ test("app-bound API composes actions and state in one js call", async () => {
   assert.ok(result.content.some(item => item.type === "text" && item.text === "state:Text"));
 });
 
+for (const Session of [PersistentJavaScriptSession, WorkerJavaScriptSession]) {
+  test(`${Session.name}: selective observation is explicit and legacy calls keep their arguments`, async t => {
+    const native = mockNative();
+    const session = new Session({ native });
+    t.after(() => session.close?.());
+    const result = await session.run(`
+      var selectiveApp = await cua.getApp("Text", { initialState: false });
+      await selectiveApp.getScreenshot({ includeAX: false, emit: false });
+      await selectiveApp.getAXState({ includeScreenshot: false, emit: false });
+      await selectiveApp.getScreenshot({ emit: false });
+      await selectiveApp.getAXState({ emit: false });
+    `);
+    assert.equal(result.isError, false);
+    assert.deepEqual(native.calls.map(call => call.arguments), [
+      { app: "Text", initialize: false, include_ax: false, text_limit: 1 },
+      { app: "Text", initialize: false, include_screenshot: false },
+      { app: "Text", initialize: false, text_limit: 1 },
+      { app: "Text", initialize: false },
+    ]);
+    const count = native.calls.length;
+    for (const code of [
+      'await selectiveApp.getScreenshot({ includeAX: "false" })',
+      'await selectiveApp.getAXState({ includeScreenshot: null })',
+    ]) {
+      const invalid = await session.run(code);
+      assert.equal(invalid.isError, true);
+      assert.match(invalid.content.at(-1).text, /must be a boolean/);
+    }
+    assert.equal(native.calls.length, count);
+    const empty = await session.run('await selectiveApp.getAXStateAndScreenshot({ includeAX: false, includeScreenshot: false })');
+    assert.equal(empty.isError, true);
+    assert.match(empty.content.at(-1).text, /At least one/);
+    assert.equal(native.calls.length, count);
+  });
+}
+
 test("app-bound API forwards background-operation options", async () => {
   const native = mockNative();
   const session = new PersistentJavaScriptSession({ native });

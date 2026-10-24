@@ -60,6 +60,10 @@ final class TargetedElementRegistry<Value> {
     }
 
     func remove(_ index: Int) { entries.removeValue(forKey: index) }
+    func removeAll(forPIDs pids: Set<Int32>) {
+        entries = entries.filter { !pids.contains($0.value.app.pid) }
+        order.removeAll { entries[$0] == nil }
+    }
     func clear() { entries.removeAll(); order.removeAll() }
 }
 

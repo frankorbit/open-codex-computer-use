@@ -53,6 +53,15 @@ typeText(text, options?)
 performSecondaryAction(elementIndex, action)
 ```
 
+On macOS, observation methods also accept optional `includeAX` and
+`includeScreenshot` booleans, both defaulting to true. Use
+`app.getAXState({includeScreenshot:false})` to skip native capture, or
+`app.getScreenshot({includeAX:false})` to skip the AX/focus walk. The latter
+invalidates previous element indexes; read AX again before element actions.
+Disabling both channels is rejected before a native call. These options do not
+deduplicate unchanged images. See [selective observation](../selective-observation.md)
+for collection semantics and real GTK/Worker validation.
+
 Discovery is available through `await cua.getState()` and
 `await cua.listApps()`. `listApps()` normalizes the native human-readable app
 catalog into an array of `{ id, displayName, lastUsedDate?, useCount?,
