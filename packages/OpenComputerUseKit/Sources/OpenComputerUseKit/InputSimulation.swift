@@ -406,6 +406,7 @@ enum InputSimulation {
             return false
         }
 
+        prepareAXInput(element)
         return AXUIElementPerformAction(element, action as CFString) == .success
     }
 
@@ -414,6 +415,7 @@ enum InputSimulation {
             return false
         }
 
+        prepareAXInput(element)
         return AXUIElementSetAttributeValue(element, attribute as CFString, kCFBooleanTrue) == .success
     }
 

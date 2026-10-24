@@ -219,6 +219,7 @@ enum SkyKeyboardDispatcher {
             },
             pressMenuItem: { item in
                 willSubmit()
+                prepareAXInput(item)
                 let result = AXUIElementPerformAction(item, kAXPressAction as CFString)
                 guard result == .success else {
                     throw ComputerUseError.message(

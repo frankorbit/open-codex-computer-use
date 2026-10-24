@@ -8,10 +8,25 @@ enum AXActionExecutionResult: Equatable {
     case completed
 }
 
+/// Observation gives each element a 0.05–0.1 s messaging timeout so tree reads stay
+/// fast, and input reuses those elements. Opening or closing a modal sheet, or saving,
+/// often takes longer to answer, so a short timeout turned an action that already took
+/// effect into `cannotComplete` ("effect is unknown"). Input first gives the element a
+/// longer timeout so the result reflects the action; a real timeout is still unknown.
+let axInputMessagingTimeout: Float = 2
+
+func prepareAXInput(
+    _ element: AXUIElement,
+    setTimeout: (AXUIElement, Float) -> AXError = AXUIElementSetMessagingTimeout
+) {
+    _ = setTimeout(element, axInputMessagingTimeout)
+}
+
 func executeAXAction(
     named action: String,
     availableActions: [String],
     repeatCount: Int = 1,
+    prepare: () -> Void = {},
     perform: () -> AXError,
     pauseBetweenAttempts: () -> Void = { Thread.sleep(forTimeInterval: 0.05) }
 ) throws -> AXActionExecutionResult {
@@ -19,6 +34,7 @@ func executeAXAction(
     guard availableActions.contains(where: { $0.caseInsensitiveCompare(action) == .orderedSame }) else {
         return .notAttempted
     }
+    prepare()
 
     let attempts = max(repeatCount, 1)
     for index in 0 ..< attempts {

@@ -19,6 +19,36 @@ final class AXActionExecutionTests: XCTestCase {
         XCTAssertTrue(events.isEmpty)
     }
 
+    func testInputTimeoutIsPreparedOnceBeforeTheFirstAttemptOnly() throws {
+        var events: [String] = []
+        let result = try executeAXAction(
+            named: "AXPress", availableActions: ["AXPress"], repeatCount: 2,
+            prepare: { events.append("prepare") },
+            perform: { events.append("input"); return .success },
+            pauseBetweenAttempts: { events.append("pause") }
+        )
+        XCTAssertEqual(result, .completed)
+        XCTAssertEqual(events, ["prepare", "input", "pause", "input"])
+
+        var prepared = false
+        XCTAssertEqual(try executeAXAction(
+            named: "AXPress", availableActions: ["AXConfirm"],
+            prepare: { prepared = true }, perform: { .success }
+        ), .notAttempted)
+        XCTAssertFalse(prepared)
+    }
+
+    func testInputGivesTheElementALongerTimeoutThanObservation() {
+        var timeouts: [Float] = []
+        prepareAXInput(AXUIElementCreateSystemWide()) { _, timeout in
+            timeouts.append(timeout)
+            return .success
+        }
+        XCTAssertEqual(timeouts, [2])
+        // Observation reads use at most 0.1 s; input must wait for modal sheets and saves.
+        XCTAssertGreaterThan(axInputMessagingTimeout, 1)
+    }
+
     func testSuccessfulRepeatedActionKeepsCaseInsensitiveSupportAndPausesOnlyBetweenAttempts() throws {
         var events: [String] = []
         let result = try executeAXAction(

@@ -1077,6 +1077,7 @@ public final class ComputerUseService {
         }
 
         try ExecutionPolicy.current().requireAXAction(rawAction)
+        prepareAXInput(element)
         let result = AXUIElementPerformAction(element, rawAction as CFString)
         guard result == .success else {
             throw ComputerUseError.message("AXUIElementPerformAction failed with \(result.rawValue)")
@@ -1110,6 +1111,7 @@ public final class ComputerUseService {
         if let repeatCount = integralScrollPageCount(pages),
            let rawAction = record.rawActions.first(where: { $0.caseInsensitiveCompare("AXScroll\(normalized.capitalized)ByPage") == .orderedSame }),
            let element = record.element {
+            prepareAXInput(element)
             for _ in 0..<repeatCount {
                 _ = AXUIElementPerformAction(element, rawAction as CFString)
                 Thread.sleep(forTimeInterval: 0.05)
@@ -1260,6 +1262,7 @@ public final class ComputerUseService {
         moveVisualCursor(to: cursorTarget)
 
         do {
+            prepareAXInput(element)
             let result = AXUIElementSetAttributeValue(element, kAXValueAttribute as CFString, value as CFString)
             guard result == .success else {
                 throw ComputerUseError.message("AXUIElementSetAttributeValue failed with \(result.rawValue)")
@@ -1520,6 +1523,7 @@ public final class ComputerUseService {
                     performAX: { action in
                         self.debugClickDecision("requested=auto executed=coordinate_ax action=\(action)")
                         InputDiagnostics.event("input_attempt", ["route": "coordinate_ax", "action": action == kAXPressAction ? "press" : "show_menu"])
+                        prepareAXInput(element)
                         let result = AXUIElementPerformAction(element, action as CFString)
                         InputDiagnostics.event("input_returned", ["route": "coordinate_ax", "ax_result": String(result.rawValue)])
                         return result
@@ -1581,6 +1585,7 @@ public final class ComputerUseService {
             return false
         }
 
+        prepareAXInput(target.list)
         let result = AXUIElementSetAttributeValue(
             target.list,
             kAXSelectedChildrenAttribute as CFString,
@@ -1711,6 +1716,7 @@ public final class ComputerUseService {
             named: action,
             availableActions: availableActions,
             repeatCount: repeatCount,
+            prepare: { prepareAXInput(element) },
             perform: { AXUIElementPerformAction(element, action as CFString) }
         ) == .completed
     }
@@ -1735,6 +1741,7 @@ public final class ComputerUseService {
     }
 
     private func setBoolAttribute(named attribute: String, on element: AXUIElement) throws -> Bool {
+        prepareAXInput(element)
         let result = AXUIElementSetAttributeValue(element, attribute as CFString, kCFBooleanTrue)
         switch result {
         case .success:
