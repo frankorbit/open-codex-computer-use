@@ -115,12 +115,68 @@ final class ApplicationWindowWaitTests: XCTestCase {
             XCTAssertEqual(error.localizedDescription, applicationWindowTimeoutMessage)
         }
         XCTAssertEqual(harness.builds, 0)
+        // 一次冷启动加一次后台 reopen；挂起期间再次初始化不再打开。
+        XCTAssertEqual(harness.opens, 2)
         XCTAssertThrowsError(try service.getAppState(app: "test.editor", initialize: true))
-        XCTAssertEqual(harness.opens, 1)
+        XCTAssertEqual(harness.opens, 2)
         harness.resolveFailure = nil
         _ = try service.getAppState(app: "Editor", initialize: true)
-        XCTAssertEqual(harness.opens, 1)
+        XCTAssertEqual(harness.opens, 2)
         XCTAssertEqual(harness.builds, 1)
+    }
+
+    func testWindowlessStartupIsReopenedOnceInTheBackgroundThenSucceeds() throws {
+        // Numbers 在无窗口状态下被强制结束后，后台冷启动不弹打开面板，后台 reopen 后才出现。
+        let harness = OpeningHarness()
+        harness.resolveFailure = .appNotFound("Editor")
+        var time = 0.0
+        var probesBeforeReopen = 0
+        var dependencies = harness.dependencies
+        dependencies.openingWindowWait = ApplicationWindowWait(now: { time }, sleep: { time += $0 })
+        dependencies.openingWindowReady = { app, _ in
+            XCTAssertEqual(app.pid, harness.openedApp.pid)
+            if harness.opens < 2 { probesBeforeReopen += 1; return false }
+            return true
+        }
+        let service = ComputerUseService(snapshotDependencies: dependencies)
+        _ = try service.getAppState(app: "Editor", initialize: true)
+        XCTAssertGreaterThan(probesBeforeReopen, 20, "reopen only after the first full wait")
+        XCTAssertEqual(harness.opens, 2)
+        XCTAssertEqual(harness.builds, 1)
+    }
+
+    func testReadyStartupNeverReopens() throws {
+        let harness = OpeningHarness()
+        harness.resolveFailure = .appNotFound("Editor")
+        var time = 0.0
+        var dependencies = harness.dependencies
+        dependencies.openingWindowWait = ApplicationWindowWait(now: { time }, sleep: { time += $0 })
+        dependencies.openingWindowReady = { _, _ in time >= 2.5 }
+        let service = ComputerUseService(snapshotDependencies: dependencies)
+        _ = try service.getAppState(app: "Editor", initialize: true)
+        XCTAssertEqual(harness.opens, 1)
+    }
+
+    func testReopenThatReturnsAnotherProcessStopsWithoutBuilding() {
+        let harness = OpeningHarness()
+        harness.resolveFailure = .appNotFound("Editor")
+        var time = 0.0
+        var opens = 0
+        var dependencies = harness.dependencies
+        dependencies.prepareOpen = { _ in
+            ApplicationOpeningRequest(identity: .bundle("test.editor"), perform: {
+                opens += 1
+                return opens == 1 ? harness.openedApp : harness.app
+            })
+        }
+        dependencies.openingWindowWait = ApplicationWindowWait(now: { time }, sleep: { time += $0 })
+        dependencies.openingWindowReady = { _, _ in false }
+        let service = ComputerUseService(snapshotDependencies: dependencies)
+        XCTAssertThrowsError(try service.getAppState(app: "Editor", initialize: true)) { error in
+            XCTAssertTrue(error.localizedDescription.contains("different application process"))
+        }
+        XCTAssertEqual(opens, 2)
+        XCTAssertEqual(harness.builds, 0)
     }
 
     func testExistingWindowNeverUsesStartupProbe() throws {

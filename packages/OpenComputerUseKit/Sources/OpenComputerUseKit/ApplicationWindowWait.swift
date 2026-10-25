@@ -1,7 +1,8 @@
 import Foundation
 
-let applicationWindowTimeoutMessage = "Application started, but its window was not ready within 3 seconds "
-    + "(cgWindowNotFound). Observe again to recover; do not repeat launch/reopen."
+// 单轮等待 3 秒；初始化在超时后最多在后台补发一次 reopen 再等一轮，消息覆盖两轮。
+let applicationWindowTimeoutMessage = "Application started, but its window was not ready within 3 seconds, "
+    + "nor after one background reopen (cgWindowNotFound). Observe again to recover; do not repeat launch/reopen."
 
 /// 只用于一次 launch/reopen 成功后的窗口准备；不改变普通观察的重试策略。
 struct ApplicationWindowWait {

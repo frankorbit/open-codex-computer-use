@@ -756,11 +756,7 @@ public final class ComputerUseService {
         let app = try request.perform()
         snapshotCache.invalidate(query: query, resolvedApp: app)
         let binding = SnapshotObservationBinding(app: app, processIdentity: snapshotDependencies.bindingIdentity(app))
-        try snapshotDependencies.openingWindowWait.run(validate: {
-            try binding.validate(current: self.snapshotDependencies.processIdentity(app.pid))
-        }, probe: { deadline in
-            try self.snapshotDependencies.openingWindowReady(app, deadline)
-        })
+        try waitForOpeningWindow(app, binding: binding, request: request)
         // 使用系统回调身份，只重试观察，不重复发送 launch/reopen。
         let snapshot = try observeWithoutActivation {
             try Task.checkCancellation()
@@ -771,6 +767,35 @@ public final class ComputerUseService {
         try binding.validate(current: snapshotDependencies.processIdentity(app.pid))
         snapshotCache.finishInitialization(for: request.identity)
         return snapshot
+    }
+
+    /// launch/reopen 之后等待窗口。超时仍没有可用窗口时，只在后台（不激活）对同一进程补发一次 reopen，
+    /// 再等一轮：实测 Numbers 在无窗口状态下被强制结束后，后台冷启动会恢复成无窗口状态、不弹打开面板，
+    /// 收到 reopen 才显示自己的打开面板。只在等待超时（探测未见可用窗口）后补发，且最多一次。
+    private func waitForOpeningWindow(
+        _ app: RunningAppDescriptor, binding: SnapshotObservationBinding, request: ApplicationOpeningRequest
+    ) throws {
+        let wait = {
+            try self.snapshotDependencies.openingWindowWait.run(validate: {
+                try binding.validate(current: self.snapshotDependencies.processIdentity(app.pid))
+            }, probe: { deadline in
+                try self.snapshotDependencies.openingWindowReady(app, deadline)
+            })
+        }
+        do {
+            try wait()
+        } catch ComputerUseError.stateUnavailable(let message) where message == applicationWindowTimeoutMessage {
+            try Task.checkCancellation()
+            try binding.validate(current: snapshotDependencies.processIdentity(app.pid))
+            let reopened = try request.perform()
+            // 打开请求固定为同一应用且不新建实例；结果必须仍是这个进程，否则不能继续沿用绑定。
+            guard reopened.pid == app.pid else {
+                throw ComputerUseError.stateUnavailable(
+                    "Reopen returned a different application process; observe again. No input was sent."
+                )
+            }
+            try wait()
+        }
     }
 
     public func getAppState(
