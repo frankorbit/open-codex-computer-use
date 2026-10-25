@@ -1,6 +1,5 @@
 import AppKit
 import ApplicationServices
-import CoreImage
 import ScreenCaptureKit
 
 /// AX 与单窗截图仅在独立 actor 中限频执行，绝不从实时帧回调同步读取。
@@ -15,7 +14,6 @@ actor LivePreviewPopupCapture {
     }
 
     private var busy = false
-    private static let imageContext = CIContext(options: [.cacheIntermediates: false])
 
     func refresh(target: LivePreviewTarget, expected: [Window]) async -> [LivePreviewPopup.Layer] {
         // 取消无法中断系统截图调用；跨 generation 仍保持最多一个采集任务。
@@ -162,42 +160,18 @@ actor LivePreviewPopupCapture {
     }
 
     private static func capture(_ window: Window, content: SCShareableContent) async throws -> CGImage? {
+        guard !Task.isCancelled else { return nil }
+        // 硬件缓冲区只含该窗口；按窗口位置叠加时可直接缩放到目标区域。
+        if let image = PopupWindowImage.hardware(window.windowID, bounds: window.bounds) {
+            return image
+        }
         guard !Task.isCancelled, let target = content.windows.first(where: {
             $0.windowID == window.windowID && $0.owningApplication?.processID == window.pid
                 && $0.frame == window.bounds && $0.isOnScreen
         }) else { return nil }
+        // 不使用独立窗口过滤器：系统把父窗和 sheet 分组后会整组缩放进弹层。跨屏或部分离屏时不合成。
         let configuration = LivePreviewCapture.configuration(for: window.bounds.size, transparent: true)
-        let filter: SCContentFilter
-        let independent: Bool
-        if #available(macOS 14.2, *),
-           let region = LivePreviewPopupRegion.displayRegion(window: window.bounds,
-                                                             displays: content.displays.map(\.frame)) {
-            // 只包含精确 window ID；用显示器本地裁剪避免系统把父窗和 sheet 分组后缩放进弹层。
-            // display-bound 过滤器默认包含子窗，必须显式关闭，关联弹层由各自采集负责。
-            filter = SCContentFilter(display: content.displays[region.index], including: [target])
-            configuration.sourceRect = region.sourceRect
-            configuration.includeChildWindows = false
-            configuration.ignoreShadowsDisplay = true
-            independent = false
-        } else {
-            // 跨屏或部分离屏不猜裁剪偏移；独立窗口只有完整区域契约成立时才允许合成。
-            filter = SCContentFilter(desktopIndependentWindow: target)
-            guard LivePreviewPopupRegion.matchesIndependentContent(filter.contentRect, window: window.bounds)
-            else { return nil }
-            independent = true
-        }
-        let sample = try await SCScreenshotManager.captureSampleBuffer(contentFilter: filter,
-                                                                       configuration: configuration)
-        guard sample.isValid, let buffer = sample.imageBuffer,
-              let attachments = CMSampleBufferGetSampleAttachmentsArray(sample, createIfNecessary: false)
-              as? [[SCStreamFrameInfo: Any]], let info = attachments.first,
-              info[.status] as? Int == SCFrameStatus.complete.rawValue,
-              !independent || LivePreviewPopupRegion.matchesCapturedFrame(info[.screenRect], window: window.bounds),
-              let image = imageContext.createCGImage(
-                  CIImage(cvPixelBuffer: buffer),
-                  from: CGRect(x: 0, y: 0, width: CVPixelBufferGetWidth(buffer), height: CVPixelBufferGetHeight(buffer))
-              ) else { return nil }
-        guard image.width == configuration.width, image.height == configuration.height else { return nil }
-        return image
+        return try await PopupWindowImage.displayCrop(target, bounds: window.bounds, content: content,
+                                                     configuration: configuration)
     }
 }

@@ -33,6 +33,14 @@ enum WindowCaptureGeometry {
         return image
     }
 
+    static func activeDisplayBounds() -> [CGRect] {
+        var count: UInt32 = 0
+        guard CGGetActiveDisplayList(0, nil, &count) == .success, count > 0 else { return [] }
+        var displays = [CGDirectDisplayID](repeating: 0, count: Int(count))
+        guard CGGetActiveDisplayList(count, &displays, &count) == .success else { return [] }
+        return displays.prefix(Int(count)).map { CGDisplayBounds($0) }
+    }
+
     static func size(of image: CGImage) -> CGSize {
         CGSize(width: image.width, height: image.height)
     }

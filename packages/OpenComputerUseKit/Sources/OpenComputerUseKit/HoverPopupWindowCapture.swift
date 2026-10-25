@@ -18,6 +18,8 @@ actor HoverPopupWindowCapture {
         }
     }
 
+    /// 退回路径（硬件采集不可用或尺寸不符时）：按显示器过滤、只包含该窗口并裁剪，输出为窗口点尺寸。
+    /// 不再使用独立窗口过滤器：它会把 sheet / popover 与父窗口整组缩放进弹层尺寸。
     func capture(_ window: HoverPopupObservation.Window, budget: HoverPopupBudget) async throws -> CGImage? {
         guard !budget.expired else { return nil }
         let content = try await shareableContent()
@@ -25,22 +27,18 @@ actor HoverPopupWindowCapture {
               let target = content.windows.first(where: {
                   $0.windowID == window.windowID && $0.owningApplication?.processID == window.pid
                       && $0.frame == window.bounds && $0.isOnScreen
-              }) else { return nil }
-        // sourceRect 保持未设置，按 SCK 的独立窗口契约采集完整窗口，绝不推算裁剪偏移。
-        let filter = SCContentFilter(desktopIndependentWindow: target)
-        guard filter.contentRect.size == window.bounds.size,
+              }),
               let width = Int(exactly: ceil(window.bounds.width)),
               let height = Int(exactly: ceil(window.bounds.height)) else { return nil }
         let configuration = SCStreamConfiguration()
         configuration.width = width
         configuration.height = height
         configuration.showsCursor = false
-        configuration.ignoreShadowsSingleWindow = true
-        // 填满全部输出像素，避免缩放或比例舍入引入留边。
         configuration.scalesToFit = true
         configuration.preservesAspectRatio = false
-        let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: configuration)
-        guard !budget.expired, image.width == width, image.height == height else { return nil }
+        let image = try await PopupWindowImage.displayCrop(target, bounds: window.bounds, content: content,
+                                                          configuration: configuration)
+        guard !budget.expired else { return nil }
         return image
     }
 }

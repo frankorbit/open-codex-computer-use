@@ -1,6 +1,7 @@
 import CoreGraphics
 import CoreVideo
 import Foundation
+import ScreenCaptureKit
 @testable import OpenComputerUseKit
 import Testing
 
@@ -38,32 +39,50 @@ struct LivePreviewPopupRenderingTests {
         #expect(LivePreviewPopupRegion.displayRegion(window: smallMenu, displays: displays) != nil)
     }
 
-    @Test func `independent fallback rejects parent groups and cropped pictures without magic offsets`() {
-        let sheet = CGRect(x: 2032, y: 189, width: 880, height: 537)
-        let content = CGRect(origin: .zero, size: sheet.size)
-        #expect(LivePreviewPopupRegion.matchesIndependentContent(content, window: sheet))
-        #expect(!LivePreviewPopupRegion.matchesIndependentContent(CGRect(x: 0, y: 0, width: 980, height: 800),
-                                                                  window: sheet))
-        #expect(!LivePreviewPopupRegion.matchesIndependentContent(CGRect(x: 0, y: 0, width: 880, height: 496),
-                                                                  window: sheet))
-        #expect(!LivePreviewPopupRegion.matchesIndependentContent(.infinite, window: sheet))
+    @Test func `hardware popup capture returns only a full window image of the requested window`() throws {
+        let display = CGRect(x: 0, y: 0, width: 1920, height: 1080)
+        let sheet = CGRect(x: 775, y: 419, width: 370, height: 182)
+        var requested: [CGWindowID] = []
+        // Numbers 保存面板实测：硬件缓冲区 740×364（2 倍屏），只含面板本身。
+        let image = try #require(PopupWindowImage.hardware(3067, bounds: sheet, displays: [display]) { id in
+            requested.append(id)
+            return try? bitmap(width: 740, height: 364) { _ in }
+        })
+        #expect(requested == [3067])
+        #expect(image.width == 740 && image.height == 364)
+        // 裁剪或比例不符的图片、硬件采集不可用时都不返回，由调用方退回显示器裁剪。
+        for size in [(740, 300), (2520, 1920), (370, 364)] {
+            #expect(PopupWindowImage.hardware(3067, bounds: sheet, displays: [display]) { _ in
+                try? bitmap(width: size.0, height: size.1) { _ in }
+            } == nil)
+        }
+        #expect(PopupWindowImage.hardware(3067, bounds: sheet, displays: [display]) { _ in nil } == nil)
     }
 
-    @Test func `actual frame geometry rejects expanded groups clipped regions and missing metadata`() {
-        let window = CGRect(x: -400, y: -41, width: 393, height: 481)
-        let initial = CGRect(origin: .zero, size: window.size)
-        #expect(LivePreviewPopupRegion.matchesIndependentContent(initial, window: window))
-        for metadata: Any? in [window, window.dictionaryRepresentation, NSValue(rect: window)] {
-            #expect(LivePreviewPopupRegion.matchesCapturedFrame(metadata, window: window))
+    @Test func `hardware popup capture is skipped when the window is not inside one display`() {
+        let displays = [CGRect(x: 0, y: 0, width: 800, height: 600), CGRect(x: 800, y: 0, width: 800, height: 600)]
+        // 跨屏、部分离屏、无显示器信息或几何无效时，即便比例恰好相同也不读硬件缓冲区。
+        for (bounds, screens) in [(CGRect(x: 700, y: 100, width: 200, height: 100), displays),
+                                  (CGRect(x: -40, y: 100, width: 200, height: 100), displays),
+                                  (CGRect(x: 100, y: 100, width: 200, height: 100), []),
+                                  (CGRect.null, displays), (CGRect.infinite, displays)] {
+            #expect(PopupWindowImage.hardware(1, bounds: bounds, displays: screens) { _ in
+                Issue.record("hardware capture must not run for \(bounds)")
+                return nil
+            } == nil)
         }
-        let expanded = window.union(CGRect(x: -500, y: -100, width: 800, height: 800))
-        for metadata: Any? in [expanded, window.offsetBy(dx: 1, dy: 0),
-                               CGRect(x: -400, y: 0, width: 393, height: 440), nil,
-                               NSNumber(value: 123), NSValue(point: .zero),
-                               NSValue(range: NSRange(location: 0, length: 1)),
-                               CGRect.infinite] {
-            #expect(!LivePreviewPopupRegion.matchesCapturedFrame(metadata, window: window))
+    }
+
+    @Test func `screenshot samples without frame status are accepted but incomplete frames are not`() {
+        // SCScreenshotManager 的单张截图样本不带帧状态（Numbers 保存面板实测为 nil）。
+        #expect(PopupWindowImage.frameIsComplete(nil))
+        #expect(PopupWindowImage.frameIsComplete([]))
+        #expect(PopupWindowImage.frameIsComplete([[:]]))
+        #expect(PopupWindowImage.frameIsComplete([[.status: SCFrameStatus.complete.rawValue]]))
+        for status in [SCFrameStatus.idle, .blank, .suspended, .started, .stopped] {
+            #expect(!PopupWindowImage.frameIsComplete([[.status: status.rawValue]]))
         }
+        #expect(!PopupWindowImage.frameIsComplete([[.status: "complete"]]))
     }
 
     @Test func `transparent popup margin preserves root and genuine black popup content remains black`() throws {

@@ -674,14 +674,8 @@ private struct WindowCapture {
 
     /// 单屏内优先硬件截图；出屏、跨屏或覆盖范围异常时使用完整窗口捕获。
     private static func captureImage(windowID: CGWindowID, bounds: CGRect, config: ImageCaptureConfig) -> CGImage? {
-        var count: UInt32 = 0
-        var displays: [CGDirectDisplayID] = []
-        if CGGetActiveDisplayList(0, nil, &count) == .success, count > 0 {
-            displays = Array(repeating: 0, count: Int(count))
-            if CGGetActiveDisplayList(count, &displays, &count) != .success { displays = [] }
-        }
-        return WindowCaptureGeometry.capture(
-            bounds: bounds, displayBounds: displays.prefix(Int(count)).map { CGDisplayBounds($0) },
+        WindowCaptureGeometry.capture(
+            bounds: bounds, displayBounds: WindowCaptureGeometry.activeDisplayBounds(),
             hardware: {
                 TimingLog.measure("snapshot.capture_hw") { SkyLightSPI.shared.hardwareCaptureWindow(windowID) }
             },
