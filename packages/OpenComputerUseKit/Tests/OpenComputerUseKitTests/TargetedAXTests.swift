@@ -21,6 +21,20 @@ final class TargetedAXTests: XCTestCase {
         XCTAssertFalse(targetedRoleEquals(nil, "button"))
     }
 
+    func testRoleMatchIgnoresWordSeparatorsFromTheRenderedTree() {
+        // 快照树把角色渲染成带空格的词（text field、pop up button），照抄过来查询也必须命中。
+        for wanted in ["text field", "text_field", "text-field", "Text Field", "AXTextField", "textfield", " AX text field "] {
+            XCTAssertTrue(targetedRoleEquals("AXTextField", wanted), wanted)
+        }
+        XCTAssertTrue(targetedRoleEquals("AXPopUpButton", "pop up button"))
+        XCTAssertTrue(targetedRoleEquals("AXMenuButton", "menu_button"))
+        XCTAssertTrue(targetedRoleEquals("AXStaticText", "static-text"))
+        // 分隔符只被忽略，不会让不同角色相等。
+        XCTAssertFalse(targetedRoleEquals("AXTextField", "text area"))
+        XCTAssertFalse(targetedRoleEquals("AXPopUpButton", "button"))
+        XCTAssertFalse(targetedRoleEquals("AXTextField", " "))
+    }
+
     func testTextMatchesTitleDescriptionOrValueSubstring() {
         let c = criteria(text: "compose")
         XCTAssertTrue(targetedRecordMatches(c, role: "AXButton", title: "Compose", description: nil, value: nil))

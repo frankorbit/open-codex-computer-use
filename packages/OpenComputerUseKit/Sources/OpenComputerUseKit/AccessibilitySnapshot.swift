@@ -2709,11 +2709,13 @@ func targetedRecordMatches(
     return true
 }
 
-/// Role match tolerant of the `AX` prefix ("button" matches "AXButton").
+/// Role match tolerant of the `AX` prefix, case and word separators: "button" matches "AXButton", and
+/// "text field", "text_field" and "text-field" match "AXTextField". The snapshot tree renders roles as spaced
+/// words ("text field", "pop up button"), so a role copied from it must match.
 func targetedRoleEquals(_ actual: String?, _ wanted: String) -> Bool {
     guard let actual else { return false }
     func normalize(_ s: String) -> String {
-        var r = s.trimmingCharacters(in: .whitespaces).lowercased()
+        var r = s.lowercased().filter { !$0.isWhitespace && $0 != "_" && $0 != "-" }
         if r.hasPrefix("ax") { r.removeFirst(2) }
         return r
     }

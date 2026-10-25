@@ -30,7 +30,7 @@ Separate CLI calls cannot share indexes. Handles expire after 120 seconds, with 
 
 ## Options and results
 
-Provide at least one of `text` and `role`. When both are present, both must match. Text matches title, description or value without case sensitivity. Roles accept either `button` or `AXButton`.
+Provide at least one of `text` and `role`. When both are present, both must match. Text matches title, description or value without case sensitivity. Roles ignore the `AX` prefix, case, spaces, underscores and hyphens: `button` matches `AXButton`, and `text field` (as the snapshot tree renders it), `text_field` and `AXTextField` all match a text field.
 
 | JS option | Native option | Default | Meaning |
 | --- | --- | --- | --- |

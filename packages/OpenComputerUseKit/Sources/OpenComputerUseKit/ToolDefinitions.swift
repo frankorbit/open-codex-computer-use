@@ -80,7 +80,7 @@ public enum ToolDefinitions {
                 properties: [
                     "app": stringProperty(description: "App name or bundle identifier"),
                     "text": stringProperty(description: "Match text in the control's title, description or value (up to 1000 UTF-16 code units). Case-insensitive substring unless exact is true. Long fields are bounded and reported as truncated."),
-                    "role": stringProperty(description: "Match this accessibility role (the AX prefix is optional, e.g. button or AXButton)"),
+                    "role": stringProperty(description: "Match this accessibility role; the AX prefix, case, spaces, underscores and hyphens are ignored (button, AXButton, text field and AXTextField all work)"),
                     "exact": [
                         "type": "boolean",
                         "description": "Require a complete text match instead of a substring. Defaults to false. No substring retry.",

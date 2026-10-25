@@ -30,7 +30,7 @@ ocu call query --args '{"app":"Safari","text":"Compose","role":"button","exact":
 
 ## 参数与结果
 
-`text` 和 `role` 至少填一个。同时填写时，两者都要匹配。文字不区分大小写，匹配 title、description 或 value；角色可以写 `button` 或 `AXButton`。
+`text` 和 `role` 至少填一个。同时填写时，两者都要匹配。文字不区分大小写，匹配 title、description 或 value；角色匹配忽略 `AX` 前缀、大小写以及空格、下划线和连字符：`button` 匹配 `AXButton`，快照树里显示的 `text field`、`text_field` 和 `AXTextField` 都能匹配文本框。
 
 | JS 参数 | native 参数 | 默认值 | 含义 |
 | --- | --- | --- | --- |
