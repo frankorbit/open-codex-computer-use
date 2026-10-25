@@ -41,8 +41,8 @@ Provide at least one of `text` and `role`. When both are present, both must matc
 | `maxNodes` | `max_nodes` | `500` | Positive traversal/queue budget, capped at 5000 |
 | `windowId` | `window_id` | Current window | An app window ID, from 1 through 4294967295 |
 
-The result contains `matches`, `truncated`, `stop_reason`, `visited_nodes`, `window_id` and the effective `limit` / `max_nodes`. Each match includes `index` and the available role, title, value, identifier, window-relative bounds and actions.
+The result contains `matches`, `truncated`, `stop_reason`, `visited_nodes`, `unreadable_nodes`, `window_id` and the effective `limit` / `max_nodes`. Each match includes `index` and the available role, title, value, identifier, window-relative bounds and actions.
 
-`truncated: true` means the search is incomplete. An empty `matches` array then does not establish that the control is absent. Reasons are `limit`, `max_nodes`, `timeout`, `ax_error` and `text_limit`; a complete search reports `complete`. Long text is searched only within a bounded prefix, and output text is capped at 1000 characters. Reaching the result limit conservatively marks the search incomplete.
+`truncated: true` means the search is incomplete. An empty `matches` array then does not establish that the control is absent. Reasons are `limit`, `max_nodes`, `timeout`, `ax_error` (the window itself could not be read), `unreadable_nodes` and `text_limit`; a complete search reports `complete`. A control that cannot be read skips only its own subtree and the walk continues; `unreadable_nodes` counts them, and when that is the only gap the reason is `unreadable_nodes`. Long text is searched only within a bounded prefix, and output text is capped at 1000 characters. Reaching the result limit conservatively marks the search incomplete.
 
 Traversal has a two-second cooperative deadline and per-call AX messaging timeouts. The deadline cannot forcibly interrupt an in-flight system call. Results depend on the app's exposed AX controls; unrendered rows and controls outside the window may be absent. Windows and Linux do not support query yet.

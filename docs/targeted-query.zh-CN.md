@@ -41,8 +41,8 @@ ocu call query --args '{"app":"Safari","text":"Compose","role":"button","exact":
 | `maxNodes` | `max_nodes` | `500` | 最多遍历多少个节点，正整数，上限 5000 |
 | `windowId` | `window_id` | 当前窗口 | 指定应用的窗口 ID，范围 1–4294967295 |
 
-返回对象包含 `matches`、`truncated`、`stop_reason`、`visited_nodes`、`window_id` 和生效的 `limit` / `max_nodes`。每项包含 `index` 及可读取的角色、文案、值、标识、窗口内坐标、动作。
+返回对象包含 `matches`、`truncated`、`stop_reason`、`visited_nodes`、`unreadable_nodes`、`window_id` 和生效的 `limit` / `max_nodes`。每项包含 `index` 及可读取的角色、文案、值、标识、窗口内坐标、动作。
 
-`truncated: true` 表示查询不完整，即使 `matches` 是空数组，也不能认定控件不存在。`stop_reason` 为 `limit`、`max_nodes`、`timeout`、`ax_error` 或 `text_limit`；完整搜索为 `complete`。长文字只搜索开头的有界片段，输出文案最多 1000 字符。达到结果上限时，也会保守标记不完整。
+`truncated: true` 表示查询不完整，即使 `matches` 是空数组，也不能认定控件不存在。`stop_reason` 为 `limit`、`max_nodes`、`timeout`、`ax_error`（窗口本身读不到）、`unreadable_nodes` 或 `text_limit`；完整搜索为 `complete`。读不到的控件只跳过它自己的子树，遍历继续；`unreadable_nodes` 记录跳过的个数，没有其他缺口时停止原因为 `unreadable_nodes`。长文字只搜索开头的有界片段，输出文案最多 1000 字符。达到结果上限时，也会保守标记不完整。
 
 遍历采用 2 秒协作式截止时间，并限制每次 AX 调用的等待时间；正在执行的系统调用不能被这个截止时间强行中断。查询依赖应用暴露的 AX 控件，不保证找到未渲染的列表行或窗口外的控件。Windows / Linux 暂不支持。

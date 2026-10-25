@@ -70,11 +70,16 @@ final class TargetedElementRegistry<Value> {
 struct TargetedWalkResult<Node> {
     var matches: [Node] = []
     var visitedNodes = 0
-    var stopReason: String?
+    /// Nodes (or their child lists) that could not be read and were skipped with their subtrees.
+    var unreadableNodes = 0
+    var walkStopReason: String?
+    /// Why the result may be incomplete: the walk stopped early, or else it skipped unreadable nodes.
+    var stopReason: String? { walkStopReason ?? (unreadableNodes > 0 ? "unreadable_nodes" : nil) }
     var truncated: Bool { stopReason != nil }
 }
 
 /// A bounded queue and child page keep wide AX containers within the node budget.
+/// One unreadable node (slow or vanished element) skips only its own subtree; an unreadable root stops the walk.
 /// Dependencies are injectable so budget/timeout/cycle behavior can be tested without a desktop.
 func boundedTargetedWalk<Node: Hashable>(
     root: Node, maxNodes: Int, limit: Int,
@@ -87,24 +92,32 @@ func boundedTargetedWalk<Node: Hashable>(
     var seen: Set<Node> = [root]
     var head = 0
     while head < queue.count {
-        if expired() { result.stopReason = "timeout"; break }
-        if result.visitedNodes >= maxNodes { result.stopReason = "max_nodes"; break }
+        if expired() { result.walkStopReason = "timeout"; break }
+        if result.visitedNodes >= maxNodes { result.walkStopReason = "max_nodes"; break }
         let node = queue[head]
         head += 1
         result.visitedNodes += 1
         let scan: (matches: Bool, descend: Bool)
-        do { scan = try inspect(node) } catch { result.stopReason = "ax_error"; break }
-        if expired() { result.stopReason = "timeout"; break }
+        do { scan = try inspect(node) } catch {
+            if node == root { result.walkStopReason = "ax_error"; break }
+            result.unreadableNodes += 1
+            continue
+        }
+        if expired() { result.walkStopReason = "timeout"; break }
         if scan.matches {
             result.matches.append(node)
-            if result.matches.count >= limit { result.stopReason = "limit"; break }
+            if result.matches.count >= limit { result.walkStopReason = "limit"; break }
         }
         if scan.descend {
             let remaining = max(0, maxNodes - seen.count)
             let page: (nodes: [Node], truncated: Bool)
-            do { page = try children(node, remaining) } catch { result.stopReason = "ax_error"; break }
-            if expired() { result.stopReason = "timeout"; break }
-            if page.truncated || page.nodes.count > remaining { result.stopReason = "max_nodes" }
+            do { page = try children(node, remaining) } catch {
+                if node == root { result.walkStopReason = "ax_error"; break }
+                result.unreadableNodes += 1
+                continue
+            }
+            if expired() { result.walkStopReason = "timeout"; break }
+            if page.truncated || page.nodes.count > remaining { result.walkStopReason = "max_nodes" }
             for child in page.nodes.prefix(remaining) where seen.insert(child).inserted { queue.append(child) }
         }
     }

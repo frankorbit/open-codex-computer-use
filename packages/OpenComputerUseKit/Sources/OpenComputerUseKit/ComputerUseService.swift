@@ -1306,6 +1306,7 @@ public final class ComputerUseService {
         let matches = result.records.map { registerTargetedElement(record: $0, context: context, criteria: criteria) }
         return ["matches": matches, "truncated": result.truncated,
                 "stop_reason": result.stopReason ?? "complete", "visited_nodes": result.visitedNodes,
+                "unreadable_nodes": result.unreadableNodes,
                 "window_id": context.windowID.map { Int($0) } ?? 0,
                 "max_nodes": criteria.maxNodes, "limit": criteria.limit]
     }

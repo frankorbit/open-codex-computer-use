@@ -109,10 +109,65 @@ final class TargetedQuerySafetyTests: XCTestCase {
         XCTAssertEqual(timedOut.visitedNodes, 0)
         XCTAssertEqual(timedOut.stopReason, "timeout")
         let failed = try boundedTargetedWalk(root: 0, maxNodes: 10, limit: 10, expired: { false }, inspect: { node in
+            if node == 0 { throw ComputerUseError.stateUnavailable("unreadable") }
+            return (true, true)
+        }, children: { _, _ in XCTFail("should not fetch children of an unreadable root"); return ([1], false) })
+        XCTAssertEqual(failed.matches, [])
+        XCTAssertEqual(failed.visitedNodes, 1)
+        XCTAssertEqual(failed.unreadableNodes, 0)
+        XCTAssertEqual(failed.stopReason, "ax_error")
+        let rootChildren = try boundedTargetedWalk(root: 0, maxNodes: 10, limit: 10, expired: { false }, inspect: { _ in (true, true) },
+                                                  children: { _, _ in throw ComputerUseError.stateUnavailable("unreadable") })
+        XCTAssertEqual(rootChildren.matches, [0])
+        XCTAssertEqual(rootChildren.stopReason, "ax_error")
+    }
+
+    func testUnreadableNodeSkipsOnlyItsSubtree() throws {
+        // 0 -> [1, 2]; 1 -> [3]; 2 -> [4]. Node 1 cannot be read, so 3 is never reached; 2 and 4 still are.
+        let tree = [0: [1, 2], 1: [3], 2: [4]]
+        var fetched: [Int] = []
+        let result = try boundedTargetedWalk(root: 0, maxNodes: 10, limit: 10, expired: { false }, inspect: { node in
+            if node == 1 { throw ComputerUseError.stateUnavailable("unreadable") }
+            return (node != 0, true)
+        }, children: { node, _ in
+            fetched.append(node)
+            return (tree[node] ?? [], false)
+        })
+        XCTAssertEqual(result.matches, [2, 4])
+        XCTAssertEqual(fetched, [0, 2, 4])
+        XCTAssertEqual(result.visitedNodes, 4)
+        XCTAssertEqual(result.unreadableNodes, 1)
+        XCTAssertTrue(result.truncated)
+        XCTAssertEqual(result.stopReason, "unreadable_nodes")
+    }
+
+    func testUnreadableChildListSkipsOnlyThatSubtree() throws {
+        let tree = [0: [1, 2], 2: [3]]
+        let result = try boundedTargetedWalk(root: 0, maxNodes: 10, limit: 10, expired: { false }, inspect: { node in
+            (node == 3, true)
+        }, children: { node, _ in
+            if node == 1 { throw ComputerUseError.stateUnavailable("children unreadable") }
+            return (tree[node] ?? [], false)
+        })
+        XCTAssertEqual(result.matches, [3])
+        XCTAssertEqual(result.unreadableNodes, 1)
+        XCTAssertEqual(result.stopReason, "unreadable_nodes")
+    }
+
+    func testEarlierStopReasonOutranksSkippedNodes() throws {
+        let result = try boundedTargetedWalk(root: 0, maxNodes: 3, limit: 10, expired: { false }, inspect: { node in
             if node == 1 { throw ComputerUseError.stateUnavailable("unreadable") }
             return (true, true)
-        }, children: { _, _ in ([1], false) })
-        XCTAssertEqual(failed.matches, [0])
-        XCTAssertEqual(failed.stopReason, "ax_error")
+        }, children: { node, _ in (node == 0 ? [1, 2, 3, 4] : [], false) })
+        XCTAssertEqual(result.unreadableNodes, 1)
+        XCTAssertEqual(result.stopReason, "max_nodes")
+    }
+
+    func testCompleteWalkWithoutSkipsIsNotTruncated() throws {
+        let result = try boundedTargetedWalk(root: 0, maxNodes: 10, limit: 10, expired: { false }, inspect: { _ in (false, true) },
+                                            children: { node, _ in (node == 0 ? [1] : [], false) })
+        XCTAssertEqual(result.unreadableNodes, 0)
+        XCTAssertNil(result.stopReason)
+        XCTAssertFalse(result.truncated)
     }
 }

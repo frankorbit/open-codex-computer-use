@@ -2439,6 +2439,7 @@ enum TargetedAX {
         let truncated: Bool
         let stopReason: String?
         let visitedNodes: Int
+        let unreadableNodes: Int
     }
 
 }
@@ -2594,7 +2595,8 @@ extension SnapshotBuilder {
             return ([], false)
         })
         let reason = result.stopReason ?? (textTruncated ? "text_limit" : nil)
-        return .init(records: result.matches.compactMap { records[$0] }, truncated: reason != nil, stopReason: reason, visitedNodes: result.visitedNodes)
+        return .init(records: result.matches.compactMap { records[$0] }, truncated: reason != nil, stopReason: reason,
+                     visitedNodes: result.visitedNodes, unreadableNodes: result.unreadableNodes)
     }
 
     private struct AXSearchNode: Hashable {

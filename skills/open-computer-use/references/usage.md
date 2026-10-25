@@ -174,7 +174,7 @@ open-computer-use snapshot --max-tree-nodes 3000 --max-tree-depth 96 "Google Chr
 - Use coordinate actions only when the rendered tree does not expose the target as an element.
 - On macOS, use `app.query` when you know the control's text or role. Bind with
   `await cua.getApp("Safari", { initialState: false })` to skip the initial snapshot.
-  Query returns `{ matches, truncated, stop_reason, visited_nodes, window_id, limit, max_nodes }`.
+  Query returns `{ matches, truncated, stop_reason, visited_nodes, unreadable_nodes, window_id, limit, max_nodes }`. Unreadable controls are skipped with their subtrees; `stop_reason: "unreadable_nodes"` means the rest of the window was searched.
   An empty result only means no matching exposed control was found when `truncated` is false.
   `exact: true` never retries substring matching. Query does not launch or activate the app.
 - Query indexes last up to 120 seconds in the same native session (5000 retained handles).
