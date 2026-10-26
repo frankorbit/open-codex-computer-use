@@ -45,4 +45,4 @@ ocu call query --args '{"app":"Safari","text":"Compose","role":"button","exact":
 
 `truncated: true` 表示查询不完整，即使 `matches` 是空数组，也不能认定控件不存在。`stop_reason` 为 `limit`、`max_nodes`、`timeout`、`ax_error`（窗口本身读不到）、`unreadable_nodes` 或 `text_limit`；完整搜索为 `complete`。读不到的控件只跳过它自己的子树，遍历继续；`unreadable_nodes` 记录跳过的个数，没有其他缺口时停止原因为 `unreadable_nodes`。长文字只搜索开头的有界片段，输出文案最多 1000 字符。达到结果上限时，也会保守标记不完整。
 
-遍历采用 2 秒协作式截止时间，并限制每次 AX 调用的等待时间；正在执行的系统调用不能被这个截止时间强行中断。查询依赖应用暴露的 AX 控件，不保证找到未渲染的列表行或窗口外的控件。Windows / Linux 暂不支持。
+与窗口相交的元素才算可见；弹层（popover）里的控件改按弹层范围判断，弹层伸出窗口时其控件仍能被查到和操作。遍历采用 2 秒协作式截止时间，并限制每次 AX 调用的等待时间；正在执行的系统调用不能被这个截止时间强行中断。查询依赖应用暴露的 AX 控件，不保证找到未渲染的列表行或窗口外的控件。Windows / Linux 暂不支持。

@@ -123,3 +123,13 @@ func boundedTargetedWalk<Node: Hashable>(
     }
     return result
 }
+
+let targetedPopoverRole = "AXPopover"
+
+/// 查询中节点是否可见，以及其子树按什么范围判断。没有位置的节点和空框视为可见；其余须与所在范围相交。
+/// 弹层（AXPopover）是独立显示的窗口，可伸出主窗口：它本身可见，子树改按弹层范围判断。
+func targetedNodeVisibility(frame: CGRect?, clip: CGRect?, isPopover: Bool) -> (visible: Bool, childClip: CGRect?) {
+    if isPopover, let frame, !frame.isEmpty { return (true, frame) }
+    let visible = frame.map { $0.isEmpty || clip.map($0.intersects) ?? true } ?? true
+    return (visible, clip)
+}

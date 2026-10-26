@@ -13,7 +13,8 @@ func validateCoordinateWindow(
     mouseReceiver: (CGPoint) -> CGWindowID? = { _ in nil },
     backgroundWindows: (Bool) throws -> CoordinateWindowObstructions = { _ in
         throw ComputerUseError.stateUnavailable("Background window order evidence is unavailable; observe again")
-    }
+    },
+    receivingWindow: CoordinateReceivingWindow? = nil
 ) throws {
     var accepted = false
     defer { InputDiagnostics.event(
@@ -25,7 +26,9 @@ func validateCoordinateWindow(
             "require_unoccluded": String(requireUnoccludedPoint)
         ]
     ) }
-    guard point.x.isFinite, point.y.isFinite, bounds.width > 0, bounds.height > 0, bounds.contains(point),
+    // 承载目标元素的同进程弹层可以伸出主窗口；点击位置落在其中即可。
+    let pointInTarget = bounds.contains(point) || receivingWindow?.bounds.contains(point) == true
+    guard point.x.isFinite, point.y.isFinite, bounds.width > 0, bounds.height > 0, pointInTarget,
           let index = windows
           .firstIndex(where: { ($0[kCGWindowNumber as String] as? NSNumber)?.uint32Value == windowID })
     else {
@@ -39,6 +42,18 @@ func validateCoordinateWindow(
     else {
         throw ComputerUseError
             .stateUnavailable("Coordinate target window changed owner, geometry or visibility; observe again")
+    }
+
+    if let receivingWindow {
+        // 接收窗口必须仍是同一进程、同一位置的屏上窗口；变化后旧的命中结论不能复用。
+        guard let info = windows.first(where: {
+            ($0[kCGWindowNumber as String] as? NSNumber)?.uint32Value == receivingWindow.windowID
+        }), (info[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value == pid,
+              coordinateWindowBounds(info) == receivingWindow.bounds,
+              (info[kCGWindowIsOnscreen as String] as? NSNumber)?.boolValue == true else {
+            throw ComputerUseError
+                .stateUnavailable("Popup hosting the target changed or closed; observe again")
+        }
     }
 
     if requireUnoccludedPoint, (current[kCGWindowIsOnscreen as String] as? NSNumber)?.boolValue != true {
@@ -57,7 +72,7 @@ func validateCoordinateWindow(
         InputDiagnostics.event("mouse_receiver", [
             "window_id": String(windowID), "receiver_window_id": receiver.map { String($0) } ?? "unknown"
         ])
-        guard receiver == windowID else {
+        guard receiver == windowID || (receivingWindow != nil && receiver == receivingWindow?.windowID) else {
             throw ComputerUseError
                 .stateUnavailable("Mouse-down receiver does not match the snapshot window; observe again")
         }
@@ -69,7 +84,8 @@ func validateCoordinateWindow(
     let evidence = try backgroundWindows((current[kCGWindowIsOnscreen as String] as? NSNumber)?.boolValue == true)
     try validateCoordinateObstructions(
         evidence, windowID: windowID, pid: pid, point: point, spacesForWindow: spacesForWindow,
-        isSharingIndicator: { WindowSharingIndicator.isIndicator($0, windows: windows) }
+        isSharingIndicator: { WindowSharingIndicator.isIndicator($0, windows: windows) },
+        receivingWindowID: receivingWindow?.windowID
     )
     accepted = true
 }
@@ -77,7 +93,8 @@ func validateCoordinateWindow(
 func validateCoordinateObstructions(
     _ evidence: CoordinateWindowObstructions, windowID: CGWindowID, pid: pid_t, point: CGPoint,
     spacesForWindow: (CGWindowID) -> [UInt64]?,
-    isSharingIndicator: ([String: Any]) -> Bool = { _ in false }
+    isSharingIndicator: ([String: Any]) -> Bool = { _ in false },
+    receivingWindowID: CGWindowID? = nil
 ) throws {
     for above in evidence.windows {
         guard let owner = above[kCGWindowOwnerPID as String] as? NSNumber else {
@@ -85,6 +102,9 @@ func validateCoordinateObstructions(
         }
         if owner.int32Value == getpid() { continue }
         if owner.int32Value != pid { continue }
+        // 承载目标元素的弹层接收这次点击，不算遮挡；它之上的其他窗口仍按遮挡处理。
+        if let receivingWindowID,
+           (above[kCGWindowNumber as String] as? NSNumber)?.uint32Value == receivingWindowID { continue }
         // 系统为被采集窗口加的共享指示器不接收应用输入，不算遮挡。
         if isSharingIndicator(above) { continue }
         guard (above[kCGWindowIsOnscreen as String] as? NSNumber)?.boolValue == true,

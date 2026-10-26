@@ -141,6 +141,29 @@ final class TargetedQuerySafetyTests: XCTestCase {
         XCTAssertEqual(result.stopReason, "unreadable_nodes")
     }
 
+    func testPopoverSubtreeIsVisibleWithinThePopoverEvenOutsideTheWindow() {
+        // 提醒事项实测：主窗口 x 264–1492，详情弹层 x 1477–1823，日期框 x 1692–1790 在主窗口之外。
+        let window = CGRect(x: 264, y: 263, width: 1228, height: 692)
+        let popover = CGRect(x: 1477, y: 74, width: 346, height: 765)
+        let dateField = CGRect(x: 1692.5, y: 269, width: 97.5, height: 24)
+        XCTAssertFalse(targetedNodeVisibility(frame: dateField, clip: window, isPopover: false).visible,
+                       "without the popover rule the field is clipped away")
+        let host = targetedNodeVisibility(frame: popover, clip: window, isPopover: true)
+        XCTAssertTrue(host.visible)
+        XCTAssertEqual(host.childClip, popover)
+        XCTAssertTrue(targetedNodeVisibility(frame: dateField, clip: host.childClip, isPopover: false).visible)
+        // 弹层整个在主窗口外也可见；弹层内、但在弹层范围外的元素仍不可见。
+        let offWindow = CGRect(x: 1600, y: 74, width: 200, height: 300)
+        XCTAssertTrue(targetedNodeVisibility(frame: offWindow, clip: window, isPopover: true).visible)
+        XCTAssertFalse(targetedNodeVisibility(frame: CGRect(x: 1900, y: 100, width: 50, height: 20),
+                                              clip: popover, isPopover: false).visible)
+        // 普通节点继承所在范围；没有位置或空框视为可见；空框的弹层不改范围。
+        XCTAssertEqual(targetedNodeVisibility(frame: dateField, clip: popover, isPopover: false).childClip, popover)
+        XCTAssertTrue(targetedNodeVisibility(frame: nil, clip: window, isPopover: false).visible)
+        XCTAssertTrue(targetedNodeVisibility(frame: .zero, clip: window, isPopover: false).visible)
+        XCTAssertEqual(targetedNodeVisibility(frame: .zero, clip: window, isPopover: true).childClip, window)
+    }
+
     func testUnreadableChildListSkipsOnlyThatSubtree() throws {
         let tree = [0: [1, 2], 2: [3]]
         let result = try boundedTargetedWalk(root: 0, maxNodes: 10, limit: 10, expired: { false }, inspect: { node in

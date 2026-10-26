@@ -24,6 +24,7 @@ func coordinateWindowObstructions(
     bounds: CGRect,
     point: CGPoint,
     isOnScreen: Bool,
+    receivingWindow: CoordinateReceivingWindow? = nil,
     query: (CGWindowListOption, CGWindowID) -> [[String: Any]]? = {
         CGWindowListCopyWindowInfo($0, $1) as? [[String: Any]]
     }
@@ -55,7 +56,8 @@ func coordinateWindowObstructions(
     // 查询层级后重验身份和几何；不能把销毁、换 PID 或可见性变化当作空遮挡集合。
     try validateCoordinateWindow(
         windowID: windowID, pid: pid, bounds: bounds, point: point,
-        windows: target, requireUnoccludedPoint: false, identityOnly: true, spacesForWindow: { _ in nil }
+        windows: target, requireUnoccludedPoint: false, identityOnly: true, spacesForWindow: { _ in nil },
+        receivingWindow: receivingWindow
     )
     let current = target.first { ($0[kCGWindowNumber as String] as? NSNumber)?.uint32Value == windowID }
     guard ((current?[kCGWindowIsOnscreen as String] as? NSNumber)?.boolValue == true) == isOnScreen else {

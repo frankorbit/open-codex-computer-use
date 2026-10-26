@@ -2502,14 +2502,30 @@ extension SnapshotBuilder {
             throw ComputerUseError.stateUnavailable("Query target no longer belongs to its window; run query again")
         }
         let scan = batchScan(element)
+        // 与查询一致：弹层里的元素按其弹层范围判断可见（弹层可伸出主窗口）。
+        let visibleArea = enclosingPopoverFrame(of: element) ?? bounds
         guard scan.role == record.role,
               displayIdentifier(scan.identifier) == record.identifier,
               targetedRecordMatches(criteria, role: scan.role, title: scan.title, description: scan.description, value: scan.value),
-              let frame = scan.globalFrame, !frame.isEmpty, frame.intersects(bounds) else {
+              let frame = scan.globalFrame, !frame.isEmpty, frame.intersects(visibleArea) else {
             throw ComputerUseError.stateUnavailable("Query target changed or its current position is unavailable; run query again")
         }
         let fresh = makeRecord(element, scan: scan, windowBounds: bounds, index: record.index)
         return (freshContext, fresh)
+    }
+
+    /// 元素所在弹层（最近的 AXPopover 祖先，最多上溯 16 层）的屏幕范围；不在弹层里时为 nil。
+    private static func enclosingPopoverFrame(of element: AXUIElement) -> CGRect? {
+        var current: AXUIElement? = element
+        for _ in 0..<16 {
+            guard let node = current else { return nil }
+            AXUIElementSetMessagingTimeout(node, 0.05)
+            if stringValue(of: node, attribute: kAXRoleAttribute) == targetedPopoverRole {
+                return OpenComputerUseKit.axFrame(node).flatMap { $0.isEmpty ? nil : $0 }
+            }
+            current = copyElement(node, attribute: kAXParentAttribute)
+        }
+        return nil
     }
 
     private static func belongsToWindow(_ element: AXUIElement, window: AXUIElement) -> Bool {
@@ -2553,7 +2569,10 @@ extension SnapshotBuilder {
         var scans: [AXSearchNode: NodeScan] = [:]
         var records: [AXSearchNode: ElementRecord] = [:]
         var textTruncated = false
-        var clip: CGRect?
+        // 每个节点按其所在的可见范围判断：根为窗口范围；弹层（AXPopover）是独立显示的窗口，可伸出主窗口，
+        // 它本身可见，其子树改按弹层范围判断。否则提醒事项详情弹层伸到主窗口外的控件会被当成不可见。
+        var clips: [AXSearchNode: CGRect] = [:]
+        var childClips: [AXSearchNode: CGRect] = [:]
         let root = AXSearchNode(element: context.windowElement)
         let result = try boundedTargetedWalk(root: root, maxNodes: criteria.maxNodes, limit: criteria.limit,
                                             expired: expired, inspect: { node in
@@ -2561,8 +2580,12 @@ extension SnapshotBuilder {
             let scan = batchScan(node.element)
             guard scan.role != nil else { throw ComputerUseError.stateUnavailable("AX node could not be read") }
             scans[node] = scan
-            if node == root { clip = scan.globalFrame }
-            let visible = scan.globalFrame.map { frame in frame.isEmpty || clip.map { frame.intersects($0) } ?? true } ?? true
+            let visibility = targetedNodeVisibility(
+                frame: scan.globalFrame, clip: node == root ? scan.globalFrame : clips[node],
+                isPopover: scan.role == targetedPopoverRole
+            )
+            let visible = visibility.visible
+            childClips[node] = visibility.childClip
             if visible, criteria.text != nil, [scan.title, scan.description, scan.value].contains(where: { ($0?.count ?? 0) > 1000 }) { textTruncated = true }
             let matches = visible && targetedRecordMatches(criteria, role: scan.role, title: scan.title, description: scan.description, value: scan.value)
             if matches { records[node] = makeRecord(node.element, scan: scan, windowBounds: context.windowBounds) }
@@ -2584,7 +2607,11 @@ extension SnapshotBuilder {
                       let elements = values as? [AXUIElement] else {
                     throw ComputerUseError.stateUnavailable("AX children could not be read")
                 }
-                return (elements.map { AXSearchNode(element: $0) }, count > remaining)
+                let children = elements.map { AXSearchNode(element: $0) }
+                if let childClip = childClips[node] {
+                    for child in children where clips[child] == nil { clips[child] = childClip }
+                }
+                return (children, count > remaining)
             }
             return ([], false)
         })

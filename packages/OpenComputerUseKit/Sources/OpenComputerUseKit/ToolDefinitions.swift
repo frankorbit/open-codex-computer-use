@@ -161,7 +161,7 @@ public enum ToolDefinitions {
         ),
         ToolDefinition(
             name: "set_value",
-            description: "Set the value of a settable accessibility element. This tool is part of plugin `Computer Use`.",
+            description: "Set the value of a settable accessibility element. For a date control (whose value is a date) pass the date as 2026-10-26 or 2026-10-26 10:00 in local time; a date-only value keeps the control's time of day. This tool is part of plugin `Computer Use`.",
             annotations: defaultAnnotations(),
             inputSchema: objectSchema(
                 properties: [

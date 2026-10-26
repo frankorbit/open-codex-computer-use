@@ -994,7 +994,8 @@ public final class ComputerUseService {
                             button: button,
                             clickCount: clickCount,
                             targetDescription: "element_index=\(elementIndex)",
-                            snapshot: snapshot
+                            snapshot: snapshot,
+                            targetElement: record.element
                         )
                     }
                 case .accessibility:
@@ -1018,7 +1019,8 @@ public final class ComputerUseService {
                         button: button,
                         clickCount: clickCount,
                         targetDescription: "element_index=\(elementIndex)",
-                        snapshot: snapshot
+                        snapshot: snapshot,
+                        receivingWindow: receivingWindow(for: record.element, at: targetPoint, snapshot: snapshot)
                     )
                 }
             } catch {
@@ -1283,12 +1285,17 @@ public final class ComputerUseService {
             throw ComputerUseError.message(nonSettableSetValueErrorMessage)
         }
 
+        // 按当前值的类型转换（日期控件写 CFDate）；解析失败在任何输入前报错。
+        var current: CFTypeRef?
+        _ = AXUIElementCopyAttributeValue(element, kAXValueAttribute as CFString, &current)
+        let newValue = try SetValueConversion.axValue(for: value, current: current)
+
         let cursorTarget = visualCursorTarget(for: record, snapshot: snapshot)
         moveVisualCursor(to: cursorTarget)
 
         do {
             prepareAXInput(element)
-            let result = AXUIElementSetAttributeValue(element, kAXValueAttribute as CFString, value as CFString)
+            let result = AXUIElementSetAttributeValue(element, kAXValueAttribute as CFString, newValue)
             guard result == .success else {
                 throw ComputerUseError.message("AXUIElementSetAttributeValue failed with \(result.rawValue)")
             }
@@ -1566,7 +1573,8 @@ public final class ComputerUseService {
     }
 
     private func validateCoordinateSnapshot(
-        at point: CGPoint, snapshot: AppSnapshot, requireUnoccludedPoint: Bool = false, identityOnly: Bool = false
+        at point: CGPoint, snapshot: AppSnapshot, requireUnoccludedPoint: Bool = false, identityOnly: Bool = false,
+        receivingWindow: CoordinateReceivingWindow? = nil
     ) throws {
         guard !snapshot.app.runningApplication.isTerminated, !snapshot.app.runningApplication.isHidden,
               let windowID = snapshot.targetWindowID, let bounds = snapshot.windowBounds,
@@ -1580,10 +1588,36 @@ public final class ComputerUseService {
             mouseReceiver: foregroundMouseReceiver,
             backgroundWindows: { isOnScreen in
                 try coordinateWindowObstructions(
-                    windowID: windowID, pid: snapshot.app.pid, bounds: bounds, point: point, isOnScreen: isOnScreen
+                    windowID: windowID, pid: snapshot.app.pid, bounds: bounds, point: point, isOnScreen: isOnScreen,
+                    receivingWindow: receivingWindow
                 )
-            }
+            },
+            receivingWindow: receivingWindow
         )
+    }
+
+    /// 元素显示在同一应用、盖在主窗口之上的弹层里时，找出承载它的弹层（AX 命中测试在该点返回目标元素）。
+    private func receivingWindow(
+        for element: AXUIElement?, at point: CGPoint, snapshot: AppSnapshot
+    ) -> CoordinateReceivingWindow? {
+        guard let element, let windowID = snapshot.targetWindowID,
+              let above = CGWindowListCopyWindowInfo([.optionOnScreenAboveWindow], windowID) as? [[String: Any]]
+        else { return nil }
+        let host = coordinateReceivingWindow(above: above, pid: snapshot.app.pid, point: point) { bounds in
+            let app = AXUIElementCreateApplication(snapshot.app.pid)
+            AXUIElementSetMessagingTimeout(app, 0.25)
+            var hit: AXUIElement?
+            guard AXUIElementCopyElementAtPosition(app, Float(point.x), Float(point.y), &hit) == .success else {
+                return false
+            }
+            return axHit(hit, sharesHostWith: element, within: bounds)
+        }
+        debugClickDecision("receiving_window point=\(point) above=\(above.count) host=\(host.map { "\($0.windowID) \($0.bounds)" } ?? "none")")
+        InputDiagnostics.event("receiving_window", [
+            "window_id": String(windowID), "receiving_window_id": host.map { String($0.windowID) } ?? "none",
+            "receiving_bounds": InputDiagnostics.bounds(host?.bounds),
+        ])
+        return host
     }
 
     private func elementBelongsToSnapshotWindow(_ element: AXUIElement?, snapshot: AppSnapshot) -> Bool? {
@@ -2382,14 +2416,15 @@ public final class ComputerUseService {
     }
 
     private func performAppPostInput(
-        snapshot: AppSnapshot, points: [CGPoint], submit: () throws -> Void
+        snapshot: AppSnapshot, points: [CGPoint], receivingWindow: CoordinateReceivingWindow? = nil,
+        submit: () throws -> Void
     ) throws {
         try dispatchAppPostInput(
             policy: ExecutionPolicy.current(),
             validateReceiver: {
                 try validateCoordinateAppPostTarget(validateWindow: {
                     for point in points {
-                        try self.validateCoordinateSnapshot(at: point, snapshot: snapshot)
+                        try self.validateCoordinateSnapshot(at: point, snapshot: snapshot, receivingWindow: receivingWindow)
                     }
                 }, readFocusedWindowMatch: {
                     try KeyboardReceiver.optionalFocusedWindowMatches(in: snapshot)
@@ -2404,21 +2439,26 @@ public final class ComputerUseService {
         button: MouseButtonKind,
         clickCount: Int,
         targetDescription: String,
-        snapshot: AppSnapshot
+        snapshot: AppSnapshot,
+        targetElement: AXUIElement? = nil
     ) throws {
         let method = coordinateMouseMethod(
             button: button, clickCount: clickCount,
             globalEnabled: automaticForegroundClicksEnabled(environment: ProcessInfo.processInfo.environment)
         )
         InputDiagnostics.event("mouse_route_selected", ["route": method.rawValue])
-        try validateCoordinateSnapshot(at: point, snapshot: snapshot, identityOnly: method == .global)
+        let host = receivingWindow(for: targetElement, at: point, snapshot: snapshot)
+        try validateCoordinateSnapshot(
+            at: point, snapshot: snapshot, identityOnly: method == .global, receivingWindow: host
+        )
         guard let bounds = snapshot.windowBounds else {
             throw ComputerUseError.stateUnavailable("Coordinate window bounds are unavailable")
         }
         try performExplicitMouseClick(
             method: method, at: point,
             windowPoint: CGPoint(x: point.x - bounds.minX, y: point.y - bounds.minY),
-            button: button, clickCount: clickCount, targetDescription: targetDescription, snapshot: snapshot
+            button: button, clickCount: clickCount, targetDescription: targetDescription, snapshot: snapshot,
+            receivingWindow: host
         )
     }
 
@@ -2429,14 +2469,15 @@ public final class ComputerUseService {
         button: MouseButtonKind,
         clickCount: Int,
         targetDescription: String,
-        snapshot: AppSnapshot
+        snapshot: AppSnapshot,
+        receivingWindow: CoordinateReceivingWindow? = nil
     ) throws {
         let eventPoint = inputEventPoint(fromScreenStatePoint: point)
 
         switch method {
         case .appPost:
             debugClickDecision("requested=app_post executed=pid_post target=\(targetDescription)")
-            try performAppPostInput(snapshot: snapshot, points: [point]) {
+            try performAppPostInput(snapshot: snapshot, points: [point], receivingWindow: receivingWindow) {
                 try InputDiagnostics.input(route: method, point: eventPoint) {
                     try InputSimulation.clickTargeted(
                         at: eventPoint, button: button, clickCount: clickCount, pid: snapshot.app.pid
@@ -2444,23 +2485,33 @@ public final class ComputerUseService {
                 }
             }
         case .skyClick:
-            guard let windowBounds = snapshot.windowBounds, let windowID = snapshot.targetWindowID else {
+            guard let snapshotBounds = snapshot.windowBounds, let snapshotWindowID = snapshot.targetWindowID else {
                 throw ComputerUseError.stateUnavailable(
                     "click_method 'sky_click' requires a current on-screen target window. Run get_app_state again."
                 )
             }
+            // 目标在承载它的弹层里时，窗口定向事件必须投给弹层并使用弹层内坐标，投给主窗口到不了弹层。
+            let windowID = receivingWindow?.windowID ?? snapshotWindowID
+            let windowBounds = receivingWindow?.bounds ?? snapshotBounds
+            let localPoint = receivingWindow.map {
+                CGPoint(x: point.x - $0.bounds.minX, y: point.y - $0.bounds.minY)
+            } ?? windowPoint
             debugClickDecision("requested=sky_click executed=skylight_pid_post target=\(targetDescription)")
             try InputDiagnostics.input(route: method, point: eventPoint) {
                 try InputSimulation.clickWithSkyLight(
-                    at: eventPoint, windowPoint: windowPoint, windowBounds: windowBounds,
-                    windowID: windowID, clickCount: clickCount, pid: snapshot.app.pid, button: button
+                    at: eventPoint, windowPoint: localPoint, windowBounds: windowBounds,
+                    windowID: windowID, clickCount: clickCount, pid: snapshot.app.pid, button: button,
+                    // 已打开的弹层不重新设 key，以免焦点被拉回主窗口（与弹层凭证点击一致）。
+                    profile: receivingWindow == nil ? .standard : .popup
                 )
             }
         case .global:
             guard foregroundClicksEnabled(environment: ProcessInfo.processInfo.environment) else {
                 throw ComputerUseError.message("Foreground click is not enabled for this process")
             }
-            try performForegroundClick(at: point, button: button, clickCount: clickCount, snapshot: snapshot)
+            try performForegroundClick(
+                at: point, button: button, clickCount: clickCount, snapshot: snapshot, receivingWindow: receivingWindow
+            )
         case .auto, .accessibility:
             throw ComputerUseError.message(
                 "click_method '\(method.rawValue)' is not a direct mouse event method"
@@ -2470,11 +2521,15 @@ public final class ComputerUseService {
 
     private func performForegroundClick(
         at point: CGPoint, button: MouseButtonKind, clickCount: Int, snapshot: AppSnapshot,
-        authorization: ForegroundClickAuthorization? = nil
+        authorization: ForegroundClickAuthorization? = nil, receivingWindow: CoordinateReceivingWindow? = nil
     ) throws {
         try dispatchForegroundClick(
             authorization: authorization,
-            validateTarget: { try self.validateCoordinateSnapshot(at: point, snapshot: snapshot, identityOnly: true) },
+            validateTarget: {
+                try self.validateCoordinateSnapshot(
+                    at: point, snapshot: snapshot, identityOnly: true, receivingWindow: receivingWindow
+                )
+            },
             prepare: {
                 guard let window = snapshot.windowElement else {
                     throw ComputerUseError.stateUnavailable("Snapshot window is unavailable; observe again")
@@ -2487,7 +2542,9 @@ public final class ComputerUseService {
                     throw ComputerUseError.stateUnavailable("Foreground window changed; observe again before clicking")
                 }
                 // 激活可能切换 Space、移动窗口或打开弹窗，旧截图坐标不能直接复用。
-                try self.validateCoordinateSnapshot(at: point, snapshot: snapshot, requireUnoccludedPoint: true)
+                try self.validateCoordinateSnapshot(
+                    at: point, snapshot: snapshot, requireUnoccludedPoint: true, receivingWindow: receivingWindow
+                )
             },
             submit: {
                 try InputDiagnostics.input(route: .global, point: point) {
