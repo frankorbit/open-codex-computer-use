@@ -89,6 +89,7 @@ final class ApplicationWindowWaitTests: XCTestCase {
         var time = 0.0
         var probes = 0
         var dependencies = harness.dependencies
+        dependencies.openingWindowAbsent = { _, _ in false }
         dependencies.openingWindowWait = ApplicationWindowWait(now: { time }, sleep: { time += $0 })
         dependencies.openingWindowReady = { app, _ in
             XCTAssertEqual(app.pid, harness.openedApp.pid)
@@ -108,6 +109,7 @@ final class ApplicationWindowWaitTests: XCTestCase {
         harness.resolveFailure = .appNotFound("Editor")
         var time = 0.0
         var dependencies = harness.dependencies
+        dependencies.openingWindowAbsent = { _, _ in false }
         dependencies.openingWindowWait = ApplicationWindowWait(now: { time }, sleep: { time += $0 })
         dependencies.openingWindowReady = { _, _ in false }
         let service = ComputerUseService(snapshotDependencies: dependencies)
@@ -115,13 +117,13 @@ final class ApplicationWindowWaitTests: XCTestCase {
             XCTAssertEqual(error.localizedDescription, applicationWindowTimeoutMessage)
         }
         XCTAssertEqual(harness.builds, 0)
-        // 一次冷启动加一次后台 reopen；挂起期间再次初始化不再打开。
-        XCTAssertEqual(harness.opens, 2)
+        // 就绪超时不证明没有窗口；挂起期间再次初始化不再打开。
+        XCTAssertEqual(harness.opens, 1)
         XCTAssertThrowsError(try service.getAppState(app: "test.editor", initialize: true))
-        XCTAssertEqual(harness.opens, 2)
+        XCTAssertEqual(harness.opens, 1)
         harness.resolveFailure = nil
         _ = try service.getAppState(app: "Editor", initialize: true)
-        XCTAssertEqual(harness.opens, 2)
+        XCTAssertEqual(harness.opens, 1)
         XCTAssertEqual(harness.builds, 1)
     }
 
@@ -132,6 +134,7 @@ final class ApplicationWindowWaitTests: XCTestCase {
         var time = 0.0
         var probesBeforeReopen = 0
         var dependencies = harness.dependencies
+        dependencies.openingWindowAbsent = { _, _ in true }
         dependencies.openingWindowWait = ApplicationWindowWait(now: { time }, sleep: { time += $0 })
         dependencies.openingWindowReady = { app, _ in
             XCTAssertEqual(app.pid, harness.openedApp.pid)
@@ -150,6 +153,7 @@ final class ApplicationWindowWaitTests: XCTestCase {
         harness.resolveFailure = .appNotFound("Editor")
         var time = 0.0
         var dependencies = harness.dependencies
+        dependencies.openingWindowAbsent = { _, _ in false }
         dependencies.openingWindowWait = ApplicationWindowWait(now: { time }, sleep: { time += $0 })
         dependencies.openingWindowReady = { _, _ in time >= 2.5 }
         let service = ComputerUseService(snapshotDependencies: dependencies)
@@ -163,6 +167,7 @@ final class ApplicationWindowWaitTests: XCTestCase {
         var time = 0.0
         var opens = 0
         var dependencies = harness.dependencies
+        dependencies.openingWindowAbsent = { _, _ in true }
         dependencies.prepareOpen = { _ in
             ApplicationOpeningRequest(identity: .bundle("test.editor"), perform: {
                 opens += 1
@@ -182,6 +187,7 @@ final class ApplicationWindowWaitTests: XCTestCase {
     func testExistingWindowNeverUsesStartupProbe() throws {
         let harness = OpeningHarness()
         var dependencies = harness.dependencies
+        dependencies.openingWindowAbsent = { _, _ in false }
         dependencies.openingWindowReady = { _, _ in XCTFail("existing window must not poll"); return false }
         let service = ComputerUseService(snapshotDependencies: dependencies)
         _ = try service.getAppState(app: "Editor", initialize: true)
@@ -193,11 +199,55 @@ final class ApplicationWindowWaitTests: XCTestCase {
         let harness = OpeningHarness()
         harness.resolveFailure = .appNotFound("Editor")
         var dependencies = harness.dependencies
+        dependencies.openingWindowAbsent = { _, _ in false }
         dependencies.processIdentity = { _ in nil }
         dependencies.openingWindowReady = { _, _ in XCTFail("exited process must not poll"); return true }
         let service = ComputerUseService(snapshotDependencies: dependencies)
         XCTAssertThrowsError(try service.getAppState(app: "Editor", initialize: true))
         XCTAssertEqual(harness.opens, 1)
         XCTAssertEqual(harness.builds, 0)
+    }
+
+    func testLateAbsenceAndUnreadableProbeNeverReopen() {
+        for late in [false, true] {
+            let harness = OpeningHarness()
+            harness.resolveFailure = .appNotFound("Editor")
+            var time = 0.0
+            var dependencies = harness.dependencies
+            dependencies.openingWindowWait = ApplicationWindowWait(now: { time }, sleep: { time += $0 })
+            dependencies.openingWindowReady = { _, _ in time = 3.1; return true }
+            dependencies.openingWindowAbsent = { _, deadline in
+                if late { time = deadline; return true }
+                return false
+            }
+            let service = ComputerUseService(snapshotDependencies: dependencies)
+            XCTAssertThrowsError(try service.getAppState(app: "Editor", initialize: true))
+            XCTAssertEqual(harness.opens, 1)
+            XCTAssertEqual(harness.builds, 0)
+        }
+    }
+
+    func testAbsenceProbePermissionAndCancellationPreventReopen() {
+        for permission in [false, true] {
+            let harness = OpeningHarness()
+            harness.resolveFailure = .appNotFound("Editor")
+            var time = 0.0
+            var dependencies = harness.dependencies
+            dependencies.openingWindowWait = ApplicationWindowWait(now: { time }, sleep: { time += $0 })
+            dependencies.openingWindowReady = { _, _ in false }
+            dependencies.openingWindowAbsent = { _, _ in
+                if permission { throw ComputerUseError.permissionDenied("denied") }
+                throw CancellationError()
+            }
+            let service = ComputerUseService(snapshotDependencies: dependencies)
+            XCTAssertThrowsError(try service.getAppState(app: "Editor", initialize: true)) { error in
+                if permission {
+                    XCTAssertEqual(error.localizedDescription, "denied")
+                } else {
+                    XCTAssertTrue(error is CancellationError)
+                }
+            }
+            XCTAssertEqual(harness.opens, 1)
+        }
     }
 }

@@ -777,9 +777,7 @@ public final class ComputerUseService {
         return snapshot
     }
 
-    /// launch/reopen 之后等待窗口。超时仍没有可用窗口时，只在后台（不激活）对同一进程补发一次 reopen，
-    /// 再等一轮：实测 Numbers 在无窗口状态下被强制结束后，后台冷启动会恢复成无窗口状态、不弹打开面板，
-    /// 收到 reopen 才显示自己的打开面板。只在等待超时（探测未见可用窗口）后补发，且最多一次。
+    /// 超时只触发只读复查；必须明确确认无窗口，才允许一次后台 reopen。未知状态保持挂起。
     private func waitForOpeningWindow(
         _ app: RunningAppDescriptor, binding: SnapshotObservationBinding, request: ApplicationOpeningRequest
     ) throws {
@@ -795,6 +793,14 @@ public final class ComputerUseService {
         } catch ComputerUseError.stateUnavailable(let message) where message == applicationWindowTimeoutMessage {
             try Task.checkCancellation()
             try binding.validate(current: snapshotDependencies.processIdentity(app.pid))
+            // 限时只读复查；迟到的空集合、不可读 AX、已有但尚未就绪的窗口均不能触发 reopen。
+            let deadline = snapshotDependencies.openingWindowWait.now() + 0.2
+            let absent = try snapshotDependencies.openingWindowAbsent(app, deadline)
+            try Task.checkCancellation()
+            try binding.validate(current: snapshotDependencies.processIdentity(app.pid))
+            guard absent, snapshotDependencies.openingWindowWait.now() < deadline else {
+                throw ComputerUseError.stateUnavailable(applicationWindowTimeoutMessage)
+            }
             let reopened = try request.perform()
             // 打开请求固定为同一应用且不新建实例；结果必须仍是这个进程，否则不能继续沿用绑定。
             guard reopened.pid == app.pid else {

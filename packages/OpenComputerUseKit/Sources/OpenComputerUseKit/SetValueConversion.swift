@@ -1,58 +1,82 @@
 import CoreFoundation
 import Foundation
 
-/// set_value 的字符串参数按目标当前值的类型转换。日期控件（提醒事项、日历的日期框）的 AXValue 是 CFDate，
-/// 直接写字符串会被以 -25201（非法参数）拒绝；后台点击又不能让弹层里的日期框获得键盘焦点。所以当前值是
-/// 日期时，按本地时区解析常见日期写法并写入 CFDate。其他类型保持原样写字符串。
+/// 仅 CFDate 控件使用严格日期转换；普通文本框保留应用自己的格式与输入语义。
 enum SetValueConversion {
-    static let dateFormats = [
-        "yyyy-MM-dd'T'HH:mm:ss", "yyyy-MM-dd'T'HH:mm", "yyyy-MM-dd HH:mm:ss", "yyyy-MM-dd HH:mm", "yyyy-MM-dd",
-        "yyyy/MM/dd HH:mm:ss", "yyyy/MM/dd HH:mm", "yyyy/MM/dd",
-    ]
-
     static func dateValueErrorMessage(_ input: String) -> String {
-        "set_value on a date control needs a date such as 2026-10-26 or 2026-10-26 10:00 (local time); "
+        "set_value on a date control needs a date such as 2026-10-26 or 2026-10-26 10:00 (local time), "
+            + "or a time such as 09:30. Invalid or ambiguous local times require correction or an explicit ISO offset; "
             + "\"\(input.prefix(40))\" was not understood. No value was sent."
     }
 
-    /// 返回要写入 AXValue 的值：当前值是日期时为 CFDate，否则为原字符串。
     static func axValue(
         for input: String, current: CFTypeRef?, timeZone: TimeZone = .current
     ) throws -> CFTypeRef {
         guard let current, CFGetTypeID(current) == CFDateGetTypeID() else { return input as CFString }
+        // 已验证 CF 类型；CFDate 与 Date 桥接。
+        // swiftlint:disable:next force_cast
         guard let date = parseDate(input, keepingTimeOf: current as! Date, timeZone: timeZone) else {
             throw ComputerUseError.invalidArguments(dateValueErrorMessage(input))
         }
         return date as CFDate
     }
 
-    /// 带时区的 ISO 8601 按其时区；其余按本地时区。只有日期时保留原值在本地时区的时刻（只改日期）。
+    /// 日期保留原时刻，时间保留原日期；拒绝系统自动归一化的非法日期及 DST 跳时/重复时刻。
     static func parseDate(_ input: String, keepingTimeOf current: Date, timeZone: TimeZone) -> Date? {
         let text = input.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return nil }
-        let iso = ISO8601DateFormatter()
-        for options: ISO8601DateFormatter.Options in [[.withInternetDateTime], [.withInternetDateTime, .withFractionalSeconds]] {
-            iso.formatOptions = options
-            if let date = iso.date(from: text) { return date }
+        // 固定协议语法；不用系统宽松解析，防止非法日期自动跨月。
+        // swiftlint:disable:next line_length
+        let pattern = #"^(?:(\d{4})([-/])(\d{2})\2(\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2})(\.\d{1,9})?)?(Z|[+-]\d{2}:\d{2})?)?|(\d{2}):(\d{2})(?::(\d{2}))?)$"#
+        guard let regex = try? NSRegularExpression(pattern: pattern),
+              let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) else { return nil }
+        func group(_ index: Int) -> String? {
+            guard let range = Range(match.range(at: index), in: text) else { return nil }
+            return String(text[range])
+        }
+        func number(_ index: Int) -> Int? {
+            group(index).flatMap(Int.init)
         }
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = timeZone
-        let formatter = DateFormatter()
-        formatter.calendar = calendar
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = timeZone
-        formatter.isLenient = false
-        for format in dateFormats {
-            formatter.dateFormat = format
-            guard let parsed = formatter.date(from: text) else { continue }
-            guard !format.contains("HH") else { return parsed }
-            let day = calendar.dateComponents([.year, .month, .day], from: parsed)
-            let time = calendar.dateComponents([.hour, .minute, .second], from: current)
-            return calendar.date(from: DateComponents(
-                year: day.year, month: day.month, day: day.day,
-                hour: time.hour, minute: time.minute, second: time.second
-            ))
+        let previous = calendar.dateComponents([.year, .month, .day, .hour, .minute, .second], from: current)
+        let timeOnly = group(1) == nil
+        let components = DateComponents(
+            year: timeOnly ? previous.year : number(1),
+            month: timeOnly ? previous.month : number(3),
+            day: timeOnly ? previous.day : number(4),
+            hour: timeOnly ? number(10) : number(5) ?? previous.hour,
+            minute: timeOnly ? number(11) : number(6) ?? previous.minute,
+            second: timeOnly ? number(12) ?? 0 : (group(5) == nil ? previous.second : number(7) ?? 0)
+        )
+        if let offset = group(9) {
+            guard let zone = offsetTimeZone(offset) else { return nil }
+            calendar.timeZone = zone
         }
-        return nil
+        guard let date = strictDate(components, calendar: calendar) else { return nil }
+        return date.addingTimeInterval(group(8).flatMap(Double.init) ?? 0)
+    }
+
+    private static func offsetTimeZone(_ offset: String) -> TimeZone? {
+        if offset == "Z" { return TimeZone(secondsFromGMT: 0) }
+        let parts = offset.dropFirst().split(separator: ":")
+        guard parts.count == 2, let hours = Int(parts[0]), let minutes = Int(parts[1]),
+              hours <= 23, minutes < 60 else { return nil }
+        return TimeZone(secondsFromGMT: (hours * 3600 + minutes * 60) * (offset.first == "-" ? -1 : 1))
+    }
+
+    private static func strictDate(_ components: DateComponents, calendar: Calendar) -> Date? {
+        guard let date = calendar.date(from: components) else { return nil }
+        let fields: Set<Calendar.Component> = [.year, .month, .day, .hour, .minute, .second]
+        guard calendar.dateComponents(fields, from: date) == components else { return nil }
+        // 同一天内查询两种重复时间策略，避免在秋季 DST 回拨时静默选择其中一次。
+        let start = calendar.startOfDay(for: date).addingTimeInterval(-1)
+        guard let first = calendar.nextDate(
+            after: start, matching: components, matchingPolicy: .strict, repeatedTimePolicy: .first
+        ),
+            let last = calendar.nextDate(
+                after: start, matching: components, matchingPolicy: .strict, repeatedTimePolicy: .last
+            ),
+            first == last else { return nil }
+        return date
     }
 }

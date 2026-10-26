@@ -43,6 +43,7 @@ struct SnapshotDependencies {
     var bindingIdentity: (RunningAppDescriptor) -> SnapshotProcessIdentity? = SnapshotProcessIdentity.bound
     var prepareOpen: (String) throws -> ApplicationOpeningRequest = AppDiscovery.prepareOpen
     var openingWindowWait = ApplicationWindowWait()
+    var openingWindowAbsent: (RunningAppDescriptor, TimeInterval) throws -> Bool = SnapshotBuilder.openingWindowAbsent
     var openingWindowReady: (RunningAppDescriptor, TimeInterval) throws -> Bool = SnapshotBuilder.openingWindowReady
     var captureHoverPopups: (AppSnapshot, HoverPopupObservationMode) -> HoverPopupCaptureResult
         = HoverPopupObservation.capture

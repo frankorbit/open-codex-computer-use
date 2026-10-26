@@ -184,6 +184,10 @@ public enum SnapshotTextStyle {
 }
 
 enum SnapshotBuilder {
+    static func openingWindowAbsent(for app: RunningAppDescriptor, deadline: TimeInterval) throws -> Bool {
+        try OpeningWindowProbe.isAbsent(for: app, deadline: deadline)
+    }
+
     static func openingWindowReady(for app: RunningAppDescriptor, deadline: TimeInterval) throws -> Bool {
         try OpeningWindowProbe.isReady(for: app, deadline: deadline)
     }
@@ -545,6 +549,19 @@ private func enableBestEffortAccessibilityModes(_ appElement: AXUIElement) -> Bo
 }
 
 private enum OpeningWindowProbe {
+    /// 只有 AX 明确返回空窗口集合且 CG 也没有窗口时，才证明无窗口；读取错误不能当作空集合。
+    static func isAbsent(for app: RunningAppDescriptor, deadline: TimeInterval) throws -> Bool {
+        guard AXIsProcessTrusted() else {
+            throw ComputerUseError.permissionDenied("Accessibility permission is required.")
+        }
+        let root = AXUIElementCreateApplication(app.pid)
+        guard let windows = try read(root, kAXWindowsAttribute, deadline: deadline) as? [AXUIElement],
+              windows.isEmpty,
+              let infos = CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]],
+              ProcessInfo.processInfo.systemUptime < deadline else { return false }
+        return !infos.contains { ($0[kCGWindowOwnerPID as String] as? pid_t) == app.pid }
+    }
+
     /// 只读取窗口元数据；独立 AX 对象上的超时不污染后续截图和树遍历。
     static func isReady(for app: RunningAppDescriptor, deadline: TimeInterval) throws -> Bool {
         guard AXIsProcessTrusted() else {
