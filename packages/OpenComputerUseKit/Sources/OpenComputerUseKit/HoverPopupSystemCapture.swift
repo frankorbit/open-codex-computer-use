@@ -192,22 +192,21 @@ struct HoverPopupSystemCapture {
         _ window: Observation.Window, windowCapture: HoverPopupWindowCapture
     ) throws -> (image: CGImage, bounds: CGRect?)? {
         guard !budget.expired else { return nil }
-        // 硬件缓冲区只含该窗口；已校验窗口完整落在一块显示器内且图片与完整窗口等比，图片正好覆盖 window.bounds。
-        if let image = PopupWindowImage.hardware(window.windowID, bounds: window.bounds) {
-            return (image, window.bounds)
+        do {
+            let budget = budget, rootID = rootID
+            if let image = try BlockingAsyncBridge.run({
+                try await windowCapture.capture(window, rootID: rootID, budget: budget)
+            }) {
+                return (image, window.bounds)
+            }
+        } catch {
+            // 显示器裁剪失败时仍可退回硬件缓冲区；预算耗尽时才上报，由调用方标记观察不完整。
+            guard !budget.expired else { throw error }
         }
         guard !budget.expired else { return nil }
-        do {
-            let budget = budget
-            guard let image = try BlockingAsyncBridge.run({
-                try await windowCapture.capture(window, budget: budget)
-            }) else { return nil }
-            return (image, window.bounds)
-        } catch {
-            // 退回采集失败只舍弃这个弹层；预算耗尽时才上报，由调用方标记观察不完整。
-            guard !budget.expired else { throw error }
-            return nil
-        }
+        // 退回：硬件缓冲区只含该窗口（材质无底色）；已校验图片与完整窗口等比，正好覆盖 window.bounds。
+        guard let image = PopupWindowImage.hardware(window.windowID, bounds: window.bounds) else { return nil }
+        return (image, window.bounds)
     }
 
 }

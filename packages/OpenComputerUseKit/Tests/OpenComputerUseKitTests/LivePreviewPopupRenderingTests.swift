@@ -73,6 +73,42 @@ struct LivePreviewPopupRenderingTests {
         }
     }
 
+    @Test func `popup alpha mask keeps the popup's own shape over an opaque backdrop`() throws {
+        // 带底色渲染的弹层整块不透明；按硬件缓冲区（2 倍尺寸）的透明度裁回：左半弹层、右半圆角外。
+        let rendered = try bitmap(width: 4, height: 2) { context in
+            context.setFillColor(CGColor(red: 0.8, green: 0.8, blue: 0.8, alpha: 1))
+            context.fill(CGRect(x: 0, y: 0, width: 4, height: 2))
+        }
+        let mask = try bitmap(width: 8, height: 4) { context in
+            context.setFillColor(CGColor(red: 0.3, green: 0.3, blue: 0.3, alpha: 1))
+            context.fill(CGRect(x: 0, y: 0, width: 4, height: 4))
+        }
+        let result = try #require(PopupWindowImage.masked(rendered, alphaFrom: mask))
+        let source = try pixel(PopupWindowImage.masked(rendered, alphaFrom: rendered) ?? rendered, x: 1, y: 1)
+        #expect(result.width == 4 && result.height == 2)
+        #expect(try pixel(result, x: 0, y: 0)[3] == 255)
+        #expect(try pixel(result, x: 0, y: 1) == source, "opaque mask keeps the rendered light material")
+        #expect(source[0] > 180, "the material stays light")
+        #expect(try pixel(result, x: 3, y: 0) == [0, 0, 0, 0], "transparent mask clears the backdrop")
+        // 半透明处按比例淡出（预乘）。
+        let half = try bitmap(width: 4, height: 2) { context in
+            context.setFillColor(CGColor(red: 0, green: 0, blue: 0, alpha: 0.5))
+            context.fill(CGRect(x: 0, y: 0, width: 4, height: 2))
+        }
+        let faded = try #require(PopupWindowImage.masked(rendered, alphaFrom: half))
+        let value = try pixel(faded, x: 2, y: 1)
+        #expect((126...130).contains(Int(value[3])))
+        #expect(abs(Int(value[0]) - Int(source[0]) / 2) <= 2, "premultiplied color fades with the alpha")
+    }
+
+    @Test func `popup backdrop follows the system appearance and is opaque`() {
+        let light = PopupWindowImage.backdrop(darkMode: false)
+        let dark = PopupWindowImage.backdrop(darkMode: true)
+        #expect(light.alpha == 1 && dark.alpha == 1)
+        #expect((light.components?.first ?? 0) > 0.8)
+        #expect((dark.components?.first ?? 1) < 0.3)
+    }
+
     @Test func `screenshot samples without frame status are accepted but incomplete frames are not`() {
         // SCScreenshotManager 的单张截图样本不带帧状态（Numbers 保存面板实测为 nil）。
         #expect(PopupWindowImage.frameIsComplete(nil))

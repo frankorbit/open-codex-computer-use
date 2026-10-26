@@ -1972,6 +1972,13 @@ final class OpenComputerUseKitTests: XCTestCase {
         XCTAssertTrue(try setValueAttributeIsSettable(result: .success, settable: true, attribute: kAXValueAttribute))
         XCTAssertFalse(try setValueAttributeIsSettable(result: .success, settable: false, attribute: kAXValueAttribute))
         XCTAssertEqual(nonSettableSetValueErrorMessage, "Cannot set a value for an element that is not settable")
+        // 提醒事项实测：模型把日期写到了日期行的开关上；报错要说明角色、点击改变、以及先打开折叠的编辑器。
+        let described = nonSettableSetValueErrorMessage(elementIndex: "43", role: "AXCheckBox")
+        XCTAssertTrue(described.hasPrefix(nonSettableSetValueErrorMessage + ": element 43 (AXCheckBox) has no settable value."))
+        XCTAssertTrue(described.contains("Switches, checkboxes and buttons change by click"))
+        XCTAssertTrue(described.contains("only appears as text has no settable control until its editor is open"))
+        XCTAssertTrue(described.hasSuffix("No value was sent."))
+        XCTAssertTrue(nonSettableSetValueErrorMessage(elementIndex: "7", role: nil).contains(": element 7 has no settable value."))
 
         XCTAssertThrowsError(
             try setValueAttributeIsSettable(result: .attributeUnsupported, settable: false, attribute: kAXValueAttribute)

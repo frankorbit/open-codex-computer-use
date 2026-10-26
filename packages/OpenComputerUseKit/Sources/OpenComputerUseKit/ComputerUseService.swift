@@ -294,6 +294,14 @@ func screenshotPixelToWindowPoint(
 
 let nonSettableSetValueErrorMessage = "Cannot set a value for an element that is not settable"
 
+/// 不可写元素的报错说明角色与出路：开关、复选框、按钮用点击改变；只以文字显示的值要先打开它的编辑器。
+func nonSettableSetValueErrorMessage(elementIndex: String, role: String?) -> String {
+    let described = role.map { "element \(elementIndex) (\($0))" } ?? "element \(elementIndex)"
+    return "\(nonSettableSetValueErrorMessage): \(described) has no settable value. Switches, checkboxes and buttons "
+        + "change by click, not set_value. A value that only appears as text has no settable control until its editor "
+        + "is open; open it, read the state again and set the control that appears. No value was sent."
+}
+
 func setValueAttributeIsSettable(result: AXError, settable: Bool, attribute: String) throws -> Bool {
     guard result == .success else {
         throw ComputerUseError.message("AXUIElementIsAttributeSettable(\(attribute)) failed with \(result.rawValue)")
@@ -1282,7 +1290,9 @@ public final class ComputerUseService {
         }
 
         guard try isSettableForSetValue(element: element, attribute: kAXValueAttribute) else {
-            throw ComputerUseError.message(nonSettableSetValueErrorMessage)
+            throw ComputerUseError.message(nonSettableSetValueErrorMessage(
+                elementIndex: elementIndex, role: record.role
+            ))
         }
 
         // 按当前值的类型转换（日期控件写 CFDate）；解析失败在任何输入前报错。

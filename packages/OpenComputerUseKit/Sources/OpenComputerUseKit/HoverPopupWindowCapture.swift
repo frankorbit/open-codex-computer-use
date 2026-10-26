@@ -18,9 +18,11 @@ actor HoverPopupWindowCapture {
         }
     }
 
-    /// 退回路径（硬件采集不可用或尺寸不符时）：按显示器过滤、只包含该窗口并裁剪，输出为窗口点尺寸。
-    /// 不再使用独立窗口过滤器：它会把 sheet / popover 与父窗口整组缩放进弹层尺寸。
-    func capture(_ window: HoverPopupObservation.Window, budget: HoverPopupBudget) async throws -> CGImage? {
+    /// 首选路径：按显示器过滤、只包含弹层和它的主窗口并裁剪到弹层位置，输出为窗口点尺寸。
+    /// 不使用独立窗口过滤器：它会把 sheet / popover 与父窗口整组缩放进弹层尺寸。
+    func capture(
+        _ window: HoverPopupObservation.Window, rootID: CGWindowID, budget: HoverPopupBudget
+    ) async throws -> CGImage? {
         guard !budget.expired else { return nil }
         let content = try await shareableContent()
         guard !budget.expired,
@@ -36,8 +38,10 @@ actor HoverPopupWindowCapture {
         configuration.showsCursor = false
         configuration.scalesToFit = true
         configuration.preservesAspectRatio = false
-        let image = try await PopupWindowImage.displayCrop(target, bounds: window.bounds, content: content,
-                                                          configuration: configuration)
+        let root = content.windows.first { $0.windowID == rootID }
+        let mask = PopupWindowImage.hardware(window.windowID, bounds: window.bounds)
+        let image = try await PopupWindowImage.displayCrop(target, root: root, bounds: window.bounds, content: content,
+                                                          configuration: configuration, alphaMask: mask)
         guard !budget.expired else { return nil }
         return image
     }

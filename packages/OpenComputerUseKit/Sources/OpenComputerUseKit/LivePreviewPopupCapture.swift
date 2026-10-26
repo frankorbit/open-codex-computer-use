@@ -29,7 +29,7 @@ actor LivePreviewPopupCapture {
                     content = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true)
                 }
                 guard let content else { return nil }
-                return try await Self.capture(window, content: content)
+                return try await Self.capture(window, rootID: target.windowID, content: content)
             }
         ))
     }
@@ -159,19 +159,24 @@ actor LivePreviewPopupCapture {
         return LivePreviewTarget(pid: 1, windowID: 1, bounds: CGRect(origin: point, size: dimensions))?.bounds
     }
 
-    private static func capture(_ window: Window, content: SCShareableContent) async throws -> CGImage? {
+    private static func capture(_ window: Window, rootID: CGWindowID?, content: SCShareableContent) async throws -> CGImage? {
         guard !Task.isCancelled else { return nil }
-        // 硬件缓冲区只含该窗口；按窗口位置叠加时可直接缩放到目标区域。
-        if let image = PopupWindowImage.hardware(window.windowID, bounds: window.bounds) {
-            return image
-        }
-        guard !Task.isCancelled, let target = content.windows.first(where: {
+        if let target = content.windows.first(where: {
             $0.windowID == window.windowID && $0.owningApplication?.processID == window.pid
                 && $0.frame == window.bounds && $0.isOnScreen
-        }) else { return nil }
-        // 不使用独立窗口过滤器：系统把父窗和 sheet 分组后会整组缩放进弹层。跨屏或部分离屏时不合成。
-        let configuration = LivePreviewCapture.configuration(for: window.bounds.size, transparent: true)
-        return try await PopupWindowImage.displayCrop(target, bounds: window.bounds, content: content,
-                                                     configuration: configuration)
+        }) {
+            // 弹层连同主窗口渲染，半透明材质才有底色。不使用独立窗口过滤器：系统把父窗和 sheet 分组后会整组缩放进弹层。
+            let configuration = LivePreviewCapture.configuration(for: window.bounds.size, transparent: true)
+            let root = content.windows.first { $0.windowID == rootID }
+            let mask = PopupWindowImage.hardware(window.windowID, bounds: window.bounds)
+            if let image = try await PopupWindowImage.displayCrop(target, root: root, bounds: window.bounds,
+                                                                  content: content, configuration: configuration,
+                                                                  alphaMask: mask) {
+                return image
+            }
+        }
+        guard !Task.isCancelled else { return nil }
+        // 退回（跨屏、部分离屏）：硬件缓冲区只含该窗口，按窗口位置叠加时可直接缩放到目标区域。
+        return PopupWindowImage.hardware(window.windowID, bounds: window.bounds)
     }
 }
