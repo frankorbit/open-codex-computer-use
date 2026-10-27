@@ -91,7 +91,10 @@ public final class StdioMCPServer {
             case "tools/call":
                 let name = params["name"] as? String ?? ""
                 let arguments = params["arguments"] as? [String: Any] ?? [:]
-                if ["click", "click_foreground_once", "hover", "type_text", "press_key"].contains(name) {
+                let diagnosticTools = [
+                    "click", "click_foreground_once", "hover", "type_text", "press_key", "perform_secondary_action"
+                ]
+                if diagnosticTools.contains(name) {
                     return try encodeJSONRPCResult(id: id, result: InputDiagnostics.result(tool: name) {
                         try dispatcher.callTool(name: name, arguments: arguments)
                     })

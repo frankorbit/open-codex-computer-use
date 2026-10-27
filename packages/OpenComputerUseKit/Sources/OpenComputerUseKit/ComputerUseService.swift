@@ -518,6 +518,7 @@ public final class ComputerUseService {
     private let coordinateClickBackend: CoordinateClickBackend?
     private var keyboardInputBackend: KeyboardInputBackend = .live
     private var sidebarSelectionBackend: ((AXUIElement, AppSnapshot) throws -> Bool)?
+    private var axActionBackend: ((AXUIElement, String) -> AXError)?
 
     public init(allowsForegroundClickOnce: Bool = false) {
         self.allowsForegroundClickOnce = allowsForegroundClickOnce
@@ -534,13 +535,15 @@ public final class ComputerUseService {
     init(
         snapshots: [String: AppSnapshot] = [:], snapshotDependencies: SnapshotDependencies,
         allowsForegroundClickOnce: Bool = false,
-        sidebarSelectionBackend: ((AXUIElement, AppSnapshot) throws -> Bool)? = nil
+        sidebarSelectionBackend: ((AXUIElement, AppSnapshot) throws -> Bool)? = nil,
+        axActionBackend: ((AXUIElement, String) -> AXError)? = nil
     ) {
         self.allowsForegroundClickOnce = allowsForegroundClickOnce
         snapshotCache = AppSnapshotCache(snapshots: snapshots, bindingIdentity: snapshotDependencies.bindingIdentity)
         coordinateClickBackend = nil
         self.snapshotDependencies = snapshotDependencies
         self.sidebarSelectionBackend = sidebarSelectionBackend
+        self.axActionBackend = axActionBackend
     }
 
     init(snapshots: [String: AppSnapshot], keyboardInputBackend: KeyboardInputBackend) {
@@ -1129,7 +1132,11 @@ public final class ComputerUseService {
         try ExecutionPolicy.current().requireAXAction(rawAction)
         try validateMenuItem(record, pid: snapshot.app.pid)
         prepareAXInput(element)
-        let result = AXUIElementPerformAction(element, rawAction as CFString)
+        let diagnostics = AXActionDiagnosticContext(route: .secondary, role: record.role, originalIndex: record.index)
+        let result = diagnostics.perform(action: rawAction, attempt: 1) {
+            if let axActionBackend { return axActionBackend(element, rawAction) }
+            return AXUIElementPerformAction(element, rawAction as CFString)
+        }
         guard result == .success else {
             throw ComputerUseError.message("AXUIElementPerformAction failed with \(result.rawValue)")
         }
@@ -1547,7 +1554,8 @@ public final class ComputerUseService {
         on record: ElementRecord,
         pid: pid_t,
         button: MouseButtonKind,
-        clickCount: Int
+        clickCount: Int,
+        diagnostics: AXActionDiagnosticContext
     ) throws -> Bool {
         guard let element = record.element else {
             return false
@@ -1570,6 +1578,7 @@ public final class ComputerUseService {
                 on: element,
                 availableActions: record.rawActions,
                 repeatCount: clickCount,
+                diagnostics: diagnostics,
                 preflight: { try self.validateMenuItem(record, pid: pid) }
             ) {
                 return true
@@ -1580,6 +1589,7 @@ public final class ComputerUseService {
                 on: element,
                 availableActions: record.rawActions,
                 repeatCount: clickCount,
+                diagnostics: diagnostics,
                 preflight: { try self.validateMenuItem(record, pid: pid) }
             ) {
                 return true
@@ -1590,6 +1600,7 @@ public final class ComputerUseService {
                 on: element,
                 availableActions: record.rawActions,
                 repeatCount: clickCount,
+                diagnostics: diagnostics,
                 preflight: { try self.validateMenuItem(record, pid: pid) }
             ) {
                 return true
@@ -1600,6 +1611,7 @@ public final class ComputerUseService {
                 on: element,
                 availableActions: record.rawActions,
                 repeatCount: clickCount,
+                diagnostics: diagnostics,
                 preflight: { try self.validateMenuItem(record, pid: pid) }
             ) {
                 return true
@@ -1849,7 +1861,8 @@ public final class ComputerUseService {
                 on: record,
                 pid: snapshot.app.pid,
                 button: button,
-                clickCount: clickCount
+                clickCount: clickCount,
+                diagnostics: .init(source: .original, role: record.role, originalIndex: record.index)
             ) {
                 debugClickDecision("handled by preferred target \(clickDebugDescription(record))")
                 pauseBeforeReadBack(0.15)
@@ -1861,7 +1874,8 @@ public final class ComputerUseService {
                     on: candidate,
                     pid: snapshot.app.pid,
                     button: button,
-                    clickCount: clickCount
+                    clickCount: clickCount,
+                    diagnostics: .init(source: .descendant, role: candidate.role, originalIndex: record.index)
                 ) {
                     debugClickDecision("handled by descendant \(clickDebugDescription(candidate))")
                     pauseBeforeReadBack(0.15)
@@ -1880,7 +1894,8 @@ public final class ComputerUseService {
                            on: hitRecord,
                            pid: snapshot.app.pid,
                            button: button,
-                           clickCount: clickCount
+                           clickCount: clickCount,
+                           diagnostics: .init(source: .hit, role: hitRecord.role, originalIndex: record.index)
                        )
                     {
                         debugClickDecision("handled by hit record \(clickDebugDescription(hitRecord))")
@@ -1901,7 +1916,12 @@ public final class ComputerUseService {
                                 on: candidate,
                                 pid: snapshot.app.pid,
                                 button: button,
-                                clickCount: clickCount
+                                clickCount: clickCount,
+                                diagnostics: .init(
+                                    source: .hitDescendant,
+                                    role: candidate.role,
+                                    originalIndex: record.index
+                                )
                             ) {
                                 debugClickDecision("handled by hit descendant \(clickDebugDescription(candidate))")
                                 pauseBeforeReadBack(0.15)
@@ -1923,7 +1943,10 @@ public final class ComputerUseService {
             return false
         }
 
-        if try activateClickTarget(element: element, availableActions: record.rawActions) {
+        if try activateClickTarget(
+            element: element, availableActions: record.rawActions,
+            diagnostics: .init(role: record.role, originalIndex: record.index)
+        ) {
             debugClickDecision("handled by activation fallback \(clickDebugDescription(record))")
             pauseBeforeReadBack(0.15)
             return true
@@ -1937,6 +1960,7 @@ public final class ComputerUseService {
         on element: AXUIElement,
         availableActions: [String],
         repeatCount: Int = 1,
+        diagnostics: AXActionDiagnosticContext,
         preflight: () throws -> Void = {}
     ) throws -> Bool {
         try executeAXAction(
@@ -1945,15 +1969,23 @@ public final class ComputerUseService {
             repeatCount: repeatCount,
             preflight: preflight,
             prepare: { prepareAXInput(element) },
-            perform: { AXUIElementPerformAction(element, action as CFString) }
+            diagnostics: diagnostics,
+            perform: {
+                if let axActionBackend { return axActionBackend(element, action) }
+                return AXUIElementPerformAction(element, action as CFString)
+            }
         ) == .completed
     }
 
-    private func activateClickTarget(element: AXUIElement, availableActions: [String]) throws -> Bool {
+    private func activateClickTarget(
+        element: AXUIElement, availableActions: [String], diagnostics: AXActionDiagnosticContext
+    ) throws -> Bool {
         try ExecutionPolicy.current().requireForeground("Accessibility activation")
         var activated = false
 
-        if try performAction(named: kAXRaiseAction as String, on: element, availableActions: availableActions) {
+        if try performAction(
+            named: kAXRaiseAction as String, on: element, availableActions: availableActions, diagnostics: diagnostics
+        ) {
             activated = true
         }
 
@@ -2203,7 +2235,10 @@ public final class ComputerUseService {
 
             if isLikelyContainingWebRowAction(targetFrame: targetFrame, candidate: candidate),
                !isLikelySyntheticSideAction(candidate, in: record),
-               try performAction(named: kAXPressAction as String, on: parent, availableActions: rawActions)
+               try performAction(
+                   named: kAXPressAction as String, on: parent, availableActions: rawActions,
+                   diagnostics: .init(source: .containingWebRow, role: candidate.role, originalIndex: record.index)
+               )
             {
                 debugClickDecision("handled by containing web row \(clickDebugDescription(candidate))")
                 return true
