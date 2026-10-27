@@ -4,7 +4,7 @@ import XCTest
 
 /// 合成 descriptor 仅承载 API 形状；测试不读取当前 App 的启动时间或终止标记。
 func popupTestProcessIdentity(for pid: pid_t) -> SnapshotProcessIdentity? {
-    SnapshotProcessIdentity(pid: pid, launchDate: Date(timeIntervalSince1970: 1000))
+    SnapshotProcessIdentity(pid: pid, startSeconds: 1000)
 }
 
 func popupTestBindingIdentity(for app: RunningAppDescriptor) -> SnapshotProcessIdentity? {
@@ -54,13 +54,13 @@ final class AppSnapshotCacheTests: XCTestCase {
         let binding = SnapshotObservationBinding(app: app, processIdentity: popupTestBindingIdentity(for: app))
         let original = try XCTUnwrap(binding.processIdentity)
         XCTAssertNoThrow(try binding.validate(current: original))
-        let wrongPID = SnapshotProcessIdentity(pid: app.pid + 1, launchDate: original.launchDate)
+        let wrongPID = SnapshotProcessIdentity(pid: app.pid + 1, startSeconds: original.startSeconds)
         let mismatched = SnapshotObservationBinding(app: app, processIdentity: wrongPID)
         XCTAssertThrowsError(try mismatched.validate(current: wrongPID))
         for replacement: SnapshotProcessIdentity? in [
             nil,
-            .init(pid: original.pid + 1, launchDate: original.launchDate),
-            .init(pid: original.pid, launchDate: original.launchDate.addingTimeInterval(1))
+            .init(pid: original.pid + 1, startSeconds: original.startSeconds),
+            .init(pid: original.pid, startSeconds: original.startSeconds + 1)
         ] {
             XCTAssertThrowsError(try binding.validate(current: replacement))
         }

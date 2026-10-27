@@ -298,8 +298,8 @@ final class OpeningHarness {
                     focusedElement: nil, selectedText: nil, windowElement: nil, elements: [:]
                 )
             },
-            processIdentity: { SnapshotProcessIdentity(pid: $0, launchDate: Date(timeIntervalSince1970: 1)) },
-            bindingIdentity: { SnapshotProcessIdentity(pid: $0.pid, launchDate: Date(timeIntervalSince1970: 1)) },
+            processIdentity: { SnapshotProcessIdentity(pid: $0, startSeconds: 1) },
+            bindingIdentity: { SnapshotProcessIdentity(pid: $0.pid, startSeconds: 1) },
             prepareOpen: { _ in
                 if let failure = self.prepareFailure { throw failure }
                 return ApplicationOpeningRequest(identity: .bundle("test.editor"), perform: {

@@ -35,6 +35,18 @@ public struct RunningAppDescriptor {
     public let bundleIdentifier: String?
     public let pid: pid_t
     public let runningApplication: NSRunningApplication
+    let observedProcessIdentity: SnapshotProcessIdentity?
+
+    init(
+        name: String, bundleIdentifier: String?, pid: pid_t, runningApplication: NSRunningApplication,
+        captureIdentity: (NSRunningApplication, pid_t) -> SnapshotProcessIdentity? = SnapshotProcessIdentity.capture
+    ) {
+        self.name = name
+        self.bundleIdentifier = bundleIdentifier
+        self.pid = pid
+        self.runningApplication = runningApplication
+        observedProcessIdentity = captureIdentity(runningApplication, pid)
+    }
 }
 
 struct ListedAppDescriptor {

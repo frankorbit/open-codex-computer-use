@@ -180,8 +180,8 @@ final class StrictPopupReadOnlyTests: XCTestCase {
         )
         let replacements: [SnapshotProcessIdentity?] = [
             nil,
-            .init(pid: original.pid, launchDate: original.launchDate.addingTimeInterval(1)),
-            .init(pid: original.pid + 1, launchDate: original.launchDate)
+            .init(pid: original.pid, startSeconds: original.startSeconds + 1),
+            .init(pid: original.pid + 1, startSeconds: original.startSeconds)
         ]
         for replacement in replacements {
             var builds = 0
@@ -218,7 +218,7 @@ final class StrictPopupReadOnlyTests: XCTestCase {
             readBack: {
                 builds += 1
                 if builds == 1 { throw ComputerUseError.message("initial failure") }
-                current = .init(pid: current.pid, launchDate: current.launchDate.addingTimeInterval(1))
+                current = .init(pid: current.pid, startSeconds: current.startSeconds + 1)
             },
             capture: { XCTFail("A changed process cannot publish the intermediate snapshot") }
         )

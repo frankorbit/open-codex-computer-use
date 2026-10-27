@@ -2,25 +2,6 @@ import AppKit
 import ApplicationServices
 import Foundation
 
-struct SnapshotProcessIdentity: Equatable {
-    let pid: pid_t
-    let launchDate: Date
-
-    static func current(for pid: pid_t) -> Self? {
-        guard let app = NSRunningApplication(processIdentifier: pid),
-              !app.isTerminated, let launchDate = app.launchDate else { return nil }
-        return Self(pid: pid, launchDate: launchDate)
-    }
-
-    static func bound(to app: RunningAppDescriptor) -> Self? {
-        // 绑定证据来自原 descriptor，不能按 PID 重查后误绑定到复用该 PID 的新进程。
-        guard app.runningApplication.processIdentifier == app.pid,
-              !app.runningApplication.isTerminated,
-              let launchDate = app.runningApplication.launchDate else { return nil }
-        return Self(pid: app.pid, launchDate: launchDate)
-    }
-}
-
 struct SnapshotObservationBinding {
     let app: RunningAppDescriptor
     let processIdentity: SnapshotProcessIdentity?
@@ -29,7 +10,8 @@ struct SnapshotObservationBinding {
         guard let processIdentity, processIdentity.pid == app.pid, current == processIdentity else {
             throw ComputerUseError.stateUnavailable(
                 "Bound app process is unavailable or changed. "
-                    + "Run get_app_state to explicitly rebind; no input was sent."
+                    + "Run get_app_state to explicitly rebind. "
+                    + "No further input was sent; do not replay the previous action."
             )
         }
     }
