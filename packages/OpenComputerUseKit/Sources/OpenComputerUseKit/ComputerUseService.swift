@@ -1003,6 +1003,7 @@ public final class ComputerUseService {
                         includeNearbyHitTesting: true,
                         allowActivationFallback: false
                     )) {
+                        try validateMenuItem(record, pid: snapshot.app.pid)
                         try performNonAXClickFallback(
                             at: targetPoint,
                             button: button,
@@ -1026,6 +1027,7 @@ public final class ComputerUseService {
                         )
                     }
                 case .appPost, .skyClick, .global:
+                    try validateMenuItem(record, pid: snapshot.app.pid)
                     try performExplicitMouseClick(
                         method: clickMethod,
                         at: targetPoint,
@@ -1118,6 +1120,7 @@ public final class ComputerUseService {
         }
 
         try ExecutionPolicy.current().requireAXAction(rawAction)
+        try validateMenuItem(record, pid: snapshot.app.pid)
         prepareAXInput(element)
         let result = AXUIElementPerformAction(element, rawAction as CFString)
         guard result == .success else {
@@ -1310,11 +1313,11 @@ public final class ComputerUseService {
         moveVisualCursor(to: cursorTarget)
 
         do {
-            prepareAXInput(element)
-            let result = AXUIElementSetAttributeValue(element, kAXValueAttribute as CFString, newValue)
-            guard result == .success else {
-                throw ComputerUseError.message("AXUIElementSetAttributeValue failed with \(result.rawValue)")
-            }
+            try executeAXScopedValueWrite(
+                preflight: { try self.validateEditingScope(for: element, snapshot: snapshot) },
+                prepare: { prepareAXInput(element) },
+                perform: { AXUIElementSetAttributeValue(element, kAXValueAttribute as CFString, newValue) }
+            )
 
             pauseBeforeReadBack(0.1)
         } catch {
@@ -1485,11 +1488,40 @@ public final class ComputerUseService {
         invalidSecondaryActionErrorMessage(action: action, elementIndex: record.index)
     }
 
-    private func performPreferredClick(on record: ElementRecord, button: MouseButtonKind, clickCount: Int) throws -> Bool {
+    private func validateEditingScope(for element: AXUIElement, snapshot: AppSnapshot) throws {
+        guard let window = snapshot.windowElement else { return }
+        let probe = AXLiveInputScope()
+        let scopes = snapshot.elements.values.compactMap { record in
+            axEditingScopeRoles.contains(record.role ?? "") ? record.element : nil
+        }
+        let focused = try probe.element(
+            AXUIElementCreateApplication(snapshot.app.pid),
+            kAXFocusedUIElementAttribute
+        )
+        try validateAXEditingScope(
+            target: element,
+            observation: AXEditingScopeObservation(window: window, observedScopes: scopes, focused: focused),
+            pid: snapshot.app.pid, reader: probe.reader
+        )
+    }
+
+    private func validateMenuItem(_ record: ElementRecord, pid: pid_t) throws {
+        guard record.role == kAXMenuItemRole as String, let element = record.element else { return }
+        try validateAXMenuItem(element, pid: pid, reader: AXLiveInputScope().reader)
+    }
+
+    private func performPreferredClick(
+        on record: ElementRecord,
+        pid: pid_t,
+        button: MouseButtonKind,
+        clickCount: Int
+    ) throws -> Bool {
         guard let element = record.element else {
             return false
         }
 
+        // 瞬态菜单在模型思考期间可能消失；失败必须抛出，不能进入其他候选或坐标回退。
+        try validateMenuItem(record, pid: pid)
         switch button {
         case .left:
             if clickCount <= 1,
@@ -1499,19 +1531,43 @@ public final class ComputerUseService {
                 return true
             }
 
-            if try performAction(named: kAXPressAction as String, on: element, availableActions: record.rawActions, repeatCount: clickCount) {
+            if try performAction(
+                named: kAXPressAction as String,
+                on: element,
+                availableActions: record.rawActions,
+                repeatCount: clickCount,
+                preflight: { try self.validateMenuItem(record, pid: pid) }
+            ) {
                 return true
             }
 
-            if try performAction(named: kAXConfirmAction as String, on: element, availableActions: record.rawActions, repeatCount: clickCount) {
+            if try performAction(
+                named: kAXConfirmAction as String,
+                on: element,
+                availableActions: record.rawActions,
+                repeatCount: clickCount,
+                preflight: { try self.validateMenuItem(record, pid: pid) }
+            ) {
                 return true
             }
 
-            if try performAction(named: "AXOpen", on: element, availableActions: record.rawActions, repeatCount: clickCount) {
+            if try performAction(
+                named: "AXOpen",
+                on: element,
+                availableActions: record.rawActions,
+                repeatCount: clickCount,
+                preflight: { try self.validateMenuItem(record, pid: pid) }
+            ) {
                 return true
             }
         case .right:
-            if try performAction(named: kAXShowMenuAction as String, on: element, availableActions: record.rawActions, repeatCount: clickCount) {
+            if try performAction(
+                named: kAXShowMenuAction as String,
+                on: element,
+                availableActions: record.rawActions,
+                repeatCount: clickCount,
+                preflight: { try self.validateMenuItem(record, pid: pid) }
+            ) {
                 return true
             }
         case .middle:
@@ -1570,6 +1626,7 @@ public final class ComputerUseService {
                         belongsToWindow: self.elementBelongsToSnapshotWindow(element, snapshot: snapshot)
                     ),
                     performAX: { action in
+                        try self.validateMenuItem(record, pid: snapshot.app.pid)
                         self.debugClickDecision("requested=auto executed=coordinate_ax action=\(action)")
                         InputDiagnostics.event("input_attempt", ["route": "coordinate_ax", "action": action == kAXPressAction ? "press" : "show_menu"])
                         prepareAXInput(element)
@@ -1720,14 +1777,24 @@ public final class ComputerUseService {
         }
 
         if !preferContainingWebRowAXClick {
-            if try performPreferredClick(on: record, button: button, clickCount: clickCount) {
+            if try performPreferredClick(
+                on: record,
+                pid: snapshot.app.pid,
+                button: button,
+                clickCount: clickCount
+            ) {
                 debugClickDecision("handled by preferred target \(clickDebugDescription(record))")
                 pauseBeforeReadBack(0.15)
                 return true
             }
 
             for candidate in descendantClickCandidates(for: record, snapshot: snapshot) {
-                if try performPreferredClick(on: candidate, button: button, clickCount: clickCount) {
+                if try performPreferredClick(
+                    on: candidate,
+                    pid: snapshot.app.pid,
+                    button: button,
+                    clickCount: clickCount
+                ) {
                     debugClickDecision("handled by descendant \(clickDebugDescription(candidate))")
                     pauseBeforeReadBack(0.15)
                     return true
@@ -1741,7 +1808,12 @@ public final class ComputerUseService {
                     }
 
                     if !isLikelySyntheticSideAction(hitRecord, in: record),
-                       try performPreferredClick(on: hitRecord, button: button, clickCount: clickCount)
+                       try performPreferredClick(
+                           on: hitRecord,
+                           pid: snapshot.app.pid,
+                           button: button,
+                           clickCount: clickCount
+                       )
                     {
                         debugClickDecision("handled by hit record \(clickDebugDescription(hitRecord))")
                         pauseBeforeReadBack(0.15)
@@ -1757,7 +1829,12 @@ public final class ComputerUseService {
                             snapshot: snapshot,
                             sideActionScope: record
                         ) {
-                            if try performPreferredClick(on: candidate, button: button, clickCount: clickCount) {
+                            if try performPreferredClick(
+                                on: candidate,
+                                pid: snapshot.app.pid,
+                                button: button,
+                                clickCount: clickCount
+                            ) {
                                 debugClickDecision("handled by hit descendant \(clickDebugDescription(candidate))")
                                 pauseBeforeReadBack(0.15)
                                 return true
@@ -1787,11 +1864,18 @@ public final class ComputerUseService {
         return false
     }
 
-    private func performAction(named action: String, on element: AXUIElement, availableActions: [String], repeatCount: Int = 1) throws -> Bool {
+    private func performAction(
+        named action: String,
+        on element: AXUIElement,
+        availableActions: [String],
+        repeatCount: Int = 1,
+        preflight: () throws -> Void = {}
+    ) throws -> Bool {
         try executeAXAction(
             named: action,
             availableActions: availableActions,
             repeatCount: repeatCount,
+            preflight: preflight,
             prepare: { prepareAXInput(element) },
             perform: { AXUIElementPerformAction(element, action as CFString) }
         ) == .completed

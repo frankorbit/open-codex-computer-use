@@ -26,6 +26,7 @@ func executeAXAction(
     named action: String,
     availableActions: [String],
     repeatCount: Int = 1,
+    preflight: () throws -> Void = {},
     prepare: () -> Void = {},
     perform: () -> AXError,
     pauseBetweenAttempts: () -> Void = { Thread.sleep(forTimeInterval: 0.05) }
@@ -34,6 +35,7 @@ func executeAXAction(
     guard availableActions.contains(where: { $0.caseInsensitiveCompare(action) == .orderedSame }) else {
         return .notAttempted
     }
+    try preflight()
     prepare()
 
     let attempts = max(repeatCount, 1)

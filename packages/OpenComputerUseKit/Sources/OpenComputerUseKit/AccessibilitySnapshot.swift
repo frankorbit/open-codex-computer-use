@@ -162,6 +162,16 @@ public struct AppSnapshot {
         lines.append("App=\(appReference) (pid \(app.pid))")
         lines.append("Window: \(quoted(displayTitle)), App: \(app.name).")
         lines.append(contentsOf: treeLines)
+        let editorIndexes = elements.values.filter { axEditingScopeRoles.contains($0.role ?? "") }.map(\.index)
+            .sorted()
+        if !editorIndexes.isEmpty {
+            lines.append(
+                "Editing scope: observed popover/sheet roots \(editorIndexes). " +
+                    "Edit controls inside the current editor, not background fields. " +
+                    "Conflicting values are uncommitted/unverified; use the observed commit path " +
+                    "and reopen before reporting saved changes."
+            )
+        }
         if !observation.includeAX {
             lines.append(SnapshotObservationOptions.accessibilityOmittedNote)
         }
