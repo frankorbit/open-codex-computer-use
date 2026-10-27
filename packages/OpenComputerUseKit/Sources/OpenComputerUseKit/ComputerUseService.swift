@@ -517,6 +517,7 @@ public final class ComputerUseService {
 
     private let coordinateClickBackend: CoordinateClickBackend?
     private var keyboardInputBackend: KeyboardInputBackend = .live
+    private var sidebarSelectionBackend: ((AXUIElement, AppSnapshot) throws -> Bool)?
 
     public init(allowsForegroundClickOnce: Bool = false) {
         self.allowsForegroundClickOnce = allowsForegroundClickOnce
@@ -530,11 +531,16 @@ public final class ComputerUseService {
         snapshotDependencies = .live
     }
 
-    init(snapshots: [String: AppSnapshot] = [:], snapshotDependencies: SnapshotDependencies, allowsForegroundClickOnce: Bool = false) {
+    init(
+        snapshots: [String: AppSnapshot] = [:], snapshotDependencies: SnapshotDependencies,
+        allowsForegroundClickOnce: Bool = false,
+        sidebarSelectionBackend: ((AXUIElement, AppSnapshot) throws -> Bool)? = nil
+    ) {
         self.allowsForegroundClickOnce = allowsForegroundClickOnce
         snapshotCache = AppSnapshotCache(snapshots: snapshots, bindingIdentity: snapshotDependencies.bindingIdentity)
         coordinateClickBackend = nil
         self.snapshotDependencies = snapshotDependencies
+        self.sidebarSelectionBackend = sidebarSelectionBackend
     }
 
     init(snapshots: [String: AppSnapshot], keyboardInputBackend: KeyboardInputBackend) {
@@ -1765,6 +1771,51 @@ public final class ComputerUseService {
         return selected
     }
 
+    private func selectFinderSidebarRowForClick(_ row: AXUIElement, snapshot: AppSnapshot) throws -> Bool {
+        if let sidebarSelectionBackend { return try sidebarSelectionBackend(row, snapshot) }
+        let probe = AXLiveInputScope()
+        let parent = try probe.element(row, kAXParentAttribute)
+        return try selectFinderSidebarRow(
+            row, bundleIdentifier: snapshot.app.bundleIdentifier,
+            reader: .init(
+                parent: { try probe.element($0, kAXParentAttribute) },
+                role: { try probe.value($0, kAXRoleAttribute) as? String },
+                isSidebar: { outline in
+                    let identifier = try probe.value(outline, kAXIdentifierAttribute) as? String
+                    let description = try probe.value(outline, kAXDescriptionAttribute) as? String
+                    return isFinderSidebarOutline(identifier: identifier, description: description)
+                },
+                selectionCapability: { try probe.sidebarSelectionCapability($0, $1) }
+            ),
+            prepare: { outline in
+                try probe.checkDeadline()
+                let (rowError, rowOwner) = try probe.sidebarOwner(row)
+                let (outlineError, outlineOwner) = try probe.sidebarOwner(outline)
+                guard rowError == .success, outlineError == .success else {
+                    throw ComputerUseError.stateUnavailable("Finder sidebar owner is unavailable; no input was sent")
+                }
+                guard let window = snapshot.windowElement,
+                      self.sameElement(parent, outline),
+                      self.sameElement(try probe.element(row, kAXParentAttribute), outline),
+                      rowOwner == snapshot.app.pid, outlineOwner == snapshot.app.pid,
+                      self.sameElement(try probe.element(row, kAXWindowAttribute), window),
+                      self.sameElement(try probe.element(outline, kAXWindowAttribute), window) else {
+                    throw ComputerUseError.stateUnavailable("Finder sidebar target changed; no input was sent")
+                }
+                try probe.checkDeadline()
+                prepareAXInput(outline)
+            },
+            select: { outline, rows in
+                InputDiagnostics.event("input_attempt", ["route": "ax_sidebar_selection"])
+                let result = AXUIElementSetAttributeValue(outline, kAXSelectedRowsAttribute as CFString, rows as CFArray)
+                InputDiagnostics.event("input_returned", [
+                    "route": "ax_sidebar_selection", "ax_result": String(result.rawValue)
+                ])
+                return result
+            }
+        )
+    }
+
     private func performAXClickSequence(
         on record: ElementRecord,
         snapshot: AppSnapshot,
@@ -1773,6 +1824,16 @@ public final class ComputerUseService {
         includeNearbyHitTesting: Bool,
         allowActivationFallback: Bool
     ) throws -> Bool {
+        // 仅原始 Finder 侧栏行采用选择语义；不把后代控件或其他 outline 改成导航。
+        if snapshot.app.bundleIdentifier == "com.apple.finder", button == .left, clickCount == 1,
+           record.role == kAXRowRole as String, let element = record.element,
+           !hasAncestorRole("AXWebArea", of: element),
+           try selectFinderSidebarRowForClick(element, snapshot: snapshot)
+        {
+            pauseBeforeReadBack(0.15)
+            return true
+        }
+
         let preferContainingWebRowAXClick = shouldPreferContainingWebRowAXClick(record, in: snapshot)
         debugClickDecision("record=\(clickDebugDescription(record)) preferContainingWebRowAXClick=\(preferContainingWebRowAXClick)")
 

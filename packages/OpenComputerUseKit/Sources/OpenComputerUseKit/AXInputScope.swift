@@ -146,6 +146,32 @@ struct AXLiveInputScope {
         }
     }
 
+    func sidebarSelectionCapability(_ element: AXUIElement, _ attribute: String) throws -> (AXError, Bool) {
+        try readAXSidebarPreflight(
+            remaining: { deadline - ProcessInfo.processInfo.systemUptime },
+            checkDeadline: checkDeadline,
+            setTimeout: { AXUIElementSetMessagingTimeout(element, $0) },
+            query: {
+                var settable = DarwinBoolean(false)
+                let result = AXUIElementIsAttributeSettable(element, attribute as CFString, &settable)
+                return (result, settable.boolValue)
+            }
+        )
+    }
+
+    func sidebarOwner(_ element: AXUIElement) throws -> (AXError, pid_t) {
+        try readAXSidebarPreflight(
+            remaining: { deadline - ProcessInfo.processInfo.systemUptime },
+            checkDeadline: checkDeadline,
+            setTimeout: { AXUIElementSetMessagingTimeout(element, $0) },
+            query: {
+                var pid: pid_t = 0
+                let result = AXUIElementGetPid(element, &pid)
+                return (result, pid)
+            }
+        )
+    }
+
     func value(_ element: AXUIElement, _ attribute: String) throws -> CFTypeRef? {
         try checkDeadline()
         // AX 对象没有公开复制 API，探测后恢复默认；不得遗留短超时给实际输入。
