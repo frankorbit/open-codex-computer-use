@@ -112,7 +112,7 @@ final class BackgroundPopupClickTests: XCTestCase {
         XCTAssertThrowsError(try cache.take(token))
     }
 
-    func testExactReceiverRequiredEvenForSamePIDOrRootAndNoReceiverLookupOnInvalidMetadata() throws {
+    func testGlobalReceiverRequiredEvenForSamePIDOrRootAndNoLookupOnInvalidMetadata() throws {
         let windows = [window(2, bounds: popupBounds), window(1, bounds: rootBounds)]
         let point = CGPoint(x: -250, y: 250)
         XCTAssertNoThrow(try validateHoverPopupWindows(

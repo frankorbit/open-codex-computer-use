@@ -1689,19 +1689,9 @@ private func formattedURLSegment(
     label: String?,
     textLimit: SnapshotTextLimit = .defaults
 ) -> String {
-    guard stringValue(of: element, attribute: kAXRoleAttribute) == "AXWebArea" else {
-        return ""
+    formattedURLSegment(role: stringValue(of: element, attribute: kAXRoleAttribute), title: title, label: label) {
+        urlValue(of: element, attribute: $0, textLimit: textLimit)
     }
-
-    guard let url = urlValue(of: element, attribute: kAXURLAttribute, textLimit: textLimit), !url.isEmpty else {
-        return ""
-    }
-
-    if url == title || url == label {
-        return ""
-    }
-
-    return ", URL: \(url)"
 }
 
 private func urlValue(

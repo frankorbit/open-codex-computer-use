@@ -46,9 +46,10 @@ struct HoverPopupObservation {
             "Image-local pixels: click({popup_token:\"\(token)\",x:...,y:...,click_method:\"\(method.rawValue)\"})"
                 + " / JS app.click([x,y],{popupToken:\"\(token)\",clickMethod:\"\(method.rawValue)\"})."
                 + " Candidate only, not parent proof; single-use token requires"
-                + " live root/popup identity/geometry and exact point receiver checks; expires after 30 seconds."
+                + " live root/popup identity/geometry and route-specific receiver checks; expires after 30 seconds."
                 + (method == .skyClick
-                    ? " Background targeted left single click only; no activation, global input or fallback."
+                    ? " Background targeted left single click only; same-app obstruction checks remain required;"
+                        + " no activation, global input or fallback."
                     : " Foreground focus is required for the compatible global left single click.")
                 + " Any attempt consumes the observation; unknown input result requires fresh observation."
                 + " Never replay."

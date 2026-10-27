@@ -162,23 +162,56 @@ func validateHoverPopupReceiver(
     }
     try InputSimulation.requireReleasedMouseButtons()
     try validateHoverPopupWindows(
-        popup, point: point, snapshot: snapshot, mouseReceiver: foregroundMouseReceiver
+        popup, point: point, snapshot: snapshot, method: method, mouseReceiver: foregroundMouseReceiver
     )
 }
 
 /// receiver 可能等待主队列；返回后必须重读元数据，不能沿用排队前的窗口几何。
 func validateHoverPopupWindows(
-    _ popup: HoverPopupObservation, point: CGPoint, snapshot: AppSnapshot,
+    _ popup: HoverPopupObservation, point: CGPoint, snapshot: AppSnapshot, method: ClickMethod = .global,
     query: () -> [[String: Any]]? = {
         CGWindowListCopyWindowInfo(.optionOnScreenOnly, kCGNullWindowID) as? [[String: Any]]
     },
-    mouseReceiver: (CGPoint) -> CGWindowID?
+    mouseReceiver: (CGPoint) -> CGWindowID?,
+    spacesForWindow: (CGWindowID) -> [UInt64]? = { SkyLightSPI.shared.spaces(forWindow: $0) }
 ) throws {
-    try validateHoverPopupWindowMetadata(popup, point: point, snapshot: snapshot, windows: query())
-    guard mouseReceiver(point) == popup.windowID else {
-        throw ComputerUseError.stateUnavailable("Popup exact mouse receiver changed or is unknown; observe again")
+    func validateState() throws {
+        let windows = query()
+        try validateHoverPopupWindowMetadata(popup, point: point, snapshot: snapshot, windows: windows)
+        if method == .skyClick {
+            guard let windows, let index = windows.firstIndex(where: {
+                ($0[kCGWindowNumber as String] as? NSNumber)?.uint32Value == popup.windowID
+            }) else {
+                throw ComputerUseError.stateUnavailable("Popup receiving window is unavailable; observe again")
+            }
+            // SkyLight 定向到凭证绑定的窗口，不用桌面前台命中来否决后台输入。
+            // 同应用上层窗口仍按普通后台点击的 Space/遮挡规则拒绝，不能只核对 PID。
+            try validateCoordinateObstructions(
+                .onScreenAbove(Array(windows[..<index])), windowID: popup.windowID, pid: popup.pid,
+                point: point, spacesForWindow: spacesForWindow,
+                isSharingIndicator: { WindowSharingIndicator.isIndicator($0, windows: windows) }
+            )
+        }
     }
-    try validateHoverPopupWindowMetadata(popup, point: point, snapshot: snapshot, windows: query())
+    guard method == .global || method == .skyClick else {
+        throw ComputerUseError.invalidArguments("Popup receiver validation requires an explicit input route")
+    }
+    try validateState()
+    if method == .global {
+        let receiver = mouseReceiver(point)
+        InputDiagnostics.event("popup_mouse_receiver", [
+            "window_id": String(popup.windowID), "receiver_window_id": receiver.map { String($0) } ?? "unknown"
+        ])
+        guard receiver == popup.windowID else {
+            throw ComputerUseError.stateUnavailable("Popup exact mouse receiver changed or is unknown; observe again")
+        }
+    }
+    // 查询接收者/Space 可能等待；发送前再次检查窗口和上层遮挡。
+    try validateState()
+    InputDiagnostics.event("popup_receiver_validated", [
+        "window_id": String(popup.windowID), "root_window_id": snapshot.targetWindowID.map { String($0) } ?? "unknown",
+        "route": method.rawValue
+    ])
 }
 
 /// 两次查询共用完整校验；同 PID 或相同 windowID 不能替代身份、几何及可见顺序。
