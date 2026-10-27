@@ -1554,7 +1554,7 @@ public final class ComputerUseService {
         case .left:
             if clickCount <= 1,
                !hasAncestorRole("AXWebArea", of: element),
-               try selectContainingListItem(for: element)
+               try selectContainingListItem(for: element, opensItem: record.rawActions.contains("AXOpen"))
             {
                 return true
             }
@@ -1741,49 +1741,28 @@ public final class ComputerUseService {
         return CFEqual(lhs, rhs)
     }
 
-    private func selectContainingListItem(for element: AXUIElement) throws -> Bool {
-        guard let target = selectableListItem(containing: element) else {
-            return false
-        }
-
-        prepareAXInput(target.list)
-        let result = AXUIElementSetAttributeValue(
-            target.list,
-            kAXSelectedChildrenAttribute as CFString,
-            [target.item] as CFArray
+    private func selectContainingListItem(for element: AXUIElement, opensItem: Bool) throws -> Bool {
+        let selected = try selectNativeListItem(
+            containing: element, opensItem: opensItem,
+            reader: .init(
+                parent: copyParent,
+                role: { self.stringValue(of: $0, attribute: kAXRoleAttribute) },
+                selectionCapability: { list in
+                    var settable = DarwinBoolean(false)
+                    let result = AXUIElementIsAttributeSettable(list, kAXSelectedChildrenAttribute as CFString, &settable)
+                    return (result, settable.boolValue)
+                }
+            ),
+            prepare: { prepareAXInput($0) },
+            select: { list, item in
+                InputDiagnostics.event("input_attempt", ["route": "ax_list_selection"])
+                let result = AXUIElementSetAttributeValue(list, kAXSelectedChildrenAttribute as CFString, [item] as CFArray)
+                InputDiagnostics.event("input_returned", ["route": "ax_list_selection", "ax_result": String(result.rawValue)])
+                return result
+            }
         )
-
-        switch result {
-        case .success:
-            pauseBeforeReadBack(0.15)
-            return true
-        case .failure, .attributeUnsupported, .actionUnsupported, .cannotComplete, .noValue, .invalidUIElement, .illegalArgument:
-            return false
-        default:
-            throw ComputerUseError.message("AXUIElementSetAttributeValue(\(kAXSelectedChildrenAttribute)) failed with \(result.rawValue)")
-        }
-    }
-
-    private func selectableListItem(containing element: AXUIElement) -> (list: AXUIElement, item: AXUIElement)? {
-        var current = element
-        var directChild = element
-
-        for _ in 0..<8 {
-            guard let parent = copyParent(of: current) else {
-                return nil
-            }
-
-            if stringValue(of: parent, attribute: kAXRoleAttribute) == kAXListRole as String,
-               isSettable(element: parent, attribute: kAXSelectedChildrenAttribute)
-            {
-                return (parent, directChild)
-            }
-
-            directChild = parent
-            current = parent
-        }
-
-        return nil
+        if selected { pauseBeforeReadBack(0.15) }
+        return selected
     }
 
     private func performAXClickSequence(
