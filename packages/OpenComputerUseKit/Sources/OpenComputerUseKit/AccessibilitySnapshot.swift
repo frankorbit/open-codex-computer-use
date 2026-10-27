@@ -12,6 +12,7 @@ final class ElementRecord {
     let role: String?
     let title: String?
     let value: String?
+    let help: String?
     let rawActions: [String]
     let prettyActions: [String]
     let isSyntheticText: Bool
@@ -24,6 +25,7 @@ final class ElementRecord {
         role: String? = nil,
         title: String? = nil,
         value: String? = nil,
+        help: String? = nil,
         rawActions: [String],
         prettyActions: [String],
         isSyntheticText: Bool = false
@@ -35,6 +37,7 @@ final class ElementRecord {
         self.role = role
         self.title = title
         self.value = value
+        self.help = help
         self.rawActions = rawActions
         self.prettyActions = prettyActions
         self.isSyntheticText = isSyntheticText
@@ -1117,6 +1120,7 @@ private struct TreeRenderer {
             element: root,
             localFrame: localFrame,
             role: role,
+            help: help,
             rawActions: actions,
             prettyActions: prettyActions
         )
@@ -2587,6 +2591,7 @@ extension SnapshotBuilder {
         kAXIdentifierAttribute as String,
         kAXPositionAttribute as String,
         kAXSizeAttribute as String,
+        kAXHelpAttribute as String,
     ]
 
     /// Use one bounded traversal so every app has the same visibility and match rules.
@@ -2664,6 +2669,7 @@ extension SnapshotBuilder {
         let description: String?
         let value: String?
         let identifier: String?
+        let help: String?
         let globalFrame: CGRect?
     }
 
@@ -2689,7 +2695,7 @@ extension SnapshotBuilder {
         }
         func str(_ i: Int) -> String? { (raw[i] as? String).map { String($0.prefix(1001)) } }
         return NodeScan(
-            role: str(0), title: str(1), description: str(2), value: str(3), identifier: str(4),
+            role: str(0), title: str(1), description: str(2), value: str(3), identifier: str(4), help: str(7),
             globalFrame: axFrame(position: raw[5], size: raw[6])
         )
     }
@@ -2728,6 +2734,7 @@ extension SnapshotBuilder {
             role: scan.role,
             title: (scan.title ?? scan.description).map { String($0.prefix(1000)) },
             value: scan.value.map { String($0.prefix(1000)) },
+            help: scan.help.map { String($0.prefix(1000)) },
             rawActions: rawActions,
             prettyActions: scan.role.map { meaningfulActions(rawActions, role: $0) } ?? rawActions
         )

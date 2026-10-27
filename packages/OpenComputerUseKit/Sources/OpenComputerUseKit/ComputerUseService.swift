@@ -558,7 +558,7 @@ public final class ComputerUseService {
     /// when read-back is off.
     private func actionResult(for query: String) throws -> ToolCallResult {
         guard actionReadBack else {
-            return .text("ok")
+            return .text("Input submitted; UI effect and saved values are unverified. Read fresh state before reporting completion.")
         }
 
         return snapshotResult(for: try refreshSnapshot(for: query), style: .actionResult)
@@ -980,6 +980,7 @@ public final class ComputerUseService {
 
         if let elementIndex {
             let record = try lookupElement(snapshot: snapshot, index: elementIndex)
+            try validateCompositeClick(record, button: button, windowBounds: snapshot.windowBounds)
             guard let windowPoint = clickPoint(for: record, snapshot: snapshot) else {
                 throw ComputerUseError.stateUnavailable("element \(elementIndex) has no clickable frame")
             }
@@ -1405,19 +1406,20 @@ public final class ComputerUseService {
         var record: ElementRecord!
         _ = targetedElements.insert(app: TargetedAppIdentity(app: context.app)) { index in
             record = ElementRecord(index: index, identifier: source.identifier, element: source.element,
-                                   localFrame: source.localFrame, role: source.role, title: source.title, value: source.value,
+                                   localFrame: source.localFrame, role: source.role, title: source.title, value: source.value, help: source.help,
                                    rawActions: source.rawActions, prettyActions: source.prettyActions, isSyntheticText: source.isSyntheticText)
             return TargetedElement(record: record, context: context, criteria: criteria)
         }
         return compactRecordDictionary(record)
     }
 
-    private func compactRecordDictionary(_ record: ElementRecord) -> [String: Any] {
+    func compactRecordDictionary(_ record: ElementRecord) -> [String: Any] {
         var dict: [String: Any] = ["index": record.index]
         if let role = record.role, !role.isEmpty { dict["role"] = role }
         if let title = record.title, !title.isEmpty { dict["title"] = title }
         if let value = record.value, !value.isEmpty { dict["value"] = value }
         if let identifier = record.identifier, !identifier.isEmpty { dict["identifier"] = identifier }
+        if let help = record.help, !help.isEmpty { dict["help"] = help }
         if let frame = record.localFrame {
             dict["bounds"] = ["x": frame.origin.x, "y": frame.origin.y, "w": frame.size.width, "h": frame.size.height]
         }
@@ -1510,6 +1512,31 @@ public final class ComputerUseService {
         try validateAXMenuItem(element, pid: pid, reader: AXLiveInputScope().reader)
     }
 
+    private func validateCompositeClick(
+        _ record: ElementRecord,
+        button: MouseButtonKind,
+        windowBounds: CGRect?
+    ) throws {
+        guard button == .left, compositeClickRoles.contains(record.role ?? "") else { return }
+        func liveRecord(_ element: AXUIElement) -> ElementRecord {
+            ElementRecord(
+                index: -1, identifier: nil, element: element,
+                localFrame: localFrame(of: element, windowBounds: windowBounds),
+                role: stringValue(of: element, attribute: kAXRoleAttribute),
+                help: stringValue(of: element, attribute: kAXHelpAttribute),
+                rawActions: [], prettyActions: []
+            )
+        }
+        // 原观察已揭示的歧义不能因临时读不到 Help 而消失。
+        try validateAXCompositeClick(record, button: button, children: { _, _ in [] })
+        let current = record.element.map(liveRecord) ?? record
+        try validateAXCompositeClick(current, button: button) { parent, limit in
+            guard let element = parent.element else { return [] }
+            // 只检查覆盖整行的复合子容器；根与子项统一使用同一坐标空间。
+            return copyChildren(of: element, limit: limit).map(liveRecord)
+        }
+    }
+
     private func performPreferredClick(
         on record: ElementRecord,
         pid: pid_t,
@@ -1520,6 +1547,7 @@ public final class ComputerUseService {
             return false
         }
 
+        try validateCompositeClick(record, button: button, windowBounds: nil)
         // 瞬态菜单在模型思考期间可能消失；失败必须抛出，不能进入其他候选或坐标回退。
         try validateMenuItem(record, pid: pid)
         switch button {
@@ -1967,6 +1995,7 @@ public final class ComputerUseService {
             element: hitElement,
             localFrame: localFrame(of: hitElement, windowBounds: snapshot.windowBounds),
             role: stringValue(of: hitElement, attribute: kAXRoleAttribute),
+            help: stringValue(of: hitElement, attribute: kAXHelpAttribute),
             rawActions: rawActions,
             prettyActions: rawActions
         )
@@ -2054,6 +2083,8 @@ public final class ComputerUseService {
                     identifier: nil,
                     element: child,
                     localFrame: localFrame(of: child, windowBounds: windowBounds),
+                    role: stringValue(of: child, attribute: kAXRoleAttribute),
+                    help: stringValue(of: child, attribute: kAXHelpAttribute),
                     rawActions: rawActions,
                     prettyActions: rawActions
                 )
@@ -2238,6 +2269,19 @@ public final class ComputerUseService {
         }
 
         return actions as? [String]
+    }
+
+    private func copyChildren(of element: AXUIElement, limit: Int) -> [AXUIElement] {
+        guard limit > 0 else { return [] }
+        var count: CFIndex = 0
+        guard AXUIElementGetAttributeValueCount(element, kAXChildrenAttribute as CFString, &count) == .success,
+              count > 0 else { return [] }
+        var values: CFArray?
+        // 在 AX 进程间读取之前限流，避免先复制大型表格的全部子项再截断。
+        guard AXUIElementCopyAttributeValues(
+            element, kAXChildrenAttribute as CFString, 0, min(count, limit), &values
+        ) == .success else { return [] }
+        return values as? [AXUIElement] ?? []
     }
 
     private func copyChildren(of element: AXUIElement) -> [AXUIElement] {
