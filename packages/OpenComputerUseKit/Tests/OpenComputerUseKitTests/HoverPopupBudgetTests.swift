@@ -35,6 +35,39 @@ final class HoverPopupBudgetTests: XCTestCase {
         XCTAssertFalse(worker.isCapturing)
     }
 
+    func testDiagnosticStageDistinguishesWindowAndAXFailuresWithoutIssuingTokens() {
+        let cases: [([Observation.Window]?, HoverPopupDiagnostics.Reason)] = [
+            (nil, .windowListUnavailable),
+            ([], .rootNotOnScreen),
+            ([Observation.Window(windowID: 10, pid: 456, bounds: root.bounds)], .rootGeometryChanged),
+            ([popup, root], .axStateUnavailable)
+        ]
+        for (windows, expected) in cases {
+            var reasons: [HoverPopupDiagnostics.Reason] = []
+            var imageCalls = 0
+            let result = collector(budget: .init(duration: 1)).capture(dependencies: .init(
+                readWindows: { windows }, readAX: { nil }, captureImage: { _ in
+                    imageCalls += 1
+                    return nil
+                }
+            ), report: { reasons.append($0) })
+            XCTAssertTrue(result.isIncomplete)
+            XCTAssertTrue(result.popups.isEmpty)
+            XCTAssertEqual(imageCalls, 0)
+            XCTAssertEqual(reasons, [expected, .incompleteCapture])
+        }
+    }
+
+    func testSuccessfulEmptyObservationDoesNotEmitFailureDiagnostics() {
+        var reasons: [HoverPopupDiagnostics.Reason] = []
+        let result = collector(budget: .init(duration: 1)).capture(dependencies: .init(
+            readWindows: { [self.root] }, readAX: { XCTFail("No candidate"); return nil },
+            captureImage: { _ in XCTFail("No candidate"); return nil }
+        ), report: { reasons.append($0) })
+        XCTAssertFalse(result.isIncomplete)
+        XCTAssertTrue(reasons.isEmpty)
+    }
+
     func testNoCGCandidateSkipsAXAndCaptureIncludingOtherAppWindows() {
         let other = Observation.Window(windowID: 12, pid: 456, bounds: popup.bounds)
         let result = collector(budget: .init(duration: 1)).capture(dependencies: .init(

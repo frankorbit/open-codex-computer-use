@@ -1,0 +1,5 @@
+# 补齐弹层观察阶段诊断
+
+用户再次验收，已解除系统提示仍在纯观察阶段返回不完整。新增脱敏本机阶段日志用于区分根窗口、AX、截图和worker预算失败，不修改捕获预算或安全规则，也不重复任何输入。
+
+关键文件为HoverPopupDiagnostics、HoverPopupSystemCapture、HoverPopupCaptureWorker及HoverPopupBudgetTests。701 XCTest（8skip）通过；Swift Testing既有短计时预览用例全量时失败一次，默认并行重跑仍有2项失败；显式串行后该suite及完整701 XCTest/68 Swift Testing通过，未改计时规则。真实根因尚待诊断签名包确认，不把日志增强当成功能修复。

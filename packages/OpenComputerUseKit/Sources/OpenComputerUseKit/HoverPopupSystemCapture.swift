@@ -19,7 +19,11 @@ extension HoverPopupObservation {
     static func capture(for snapshot: AppSnapshot, mode: HoverPopupObservationMode) -> HoverPopupCaptureResult {
         let started = ProcessInfo.processInfo.systemUptime
         guard let rootID = snapshot.targetWindowID, let bounds = snapshot.windowBounds,
-              snapshot.windowElement != nil else { return .incomplete }
+              snapshot.windowElement != nil
+        else {
+            HoverPopupDiagnostics.record(.snapshotRootMissing)
+            return .incomplete
+        }
         let settings = CaptureSettings(
             config: .current, policy: try? ExecutionPolicy.current(),
             backgroundAvailable: SkyLightSPI.shared.capability.isAvailable
@@ -50,16 +54,23 @@ struct HoverPopupSystemCapture {
         let windowCapture = HoverPopupWindowCapture()
         return capture(dependencies: .init(
             readWindows: {
-                guard !application.isTerminated, !application.isHidden,
-                      let info = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID)
-                      as? [[String: Any]] else { return nil }
+                guard !application.isTerminated, !application.isHidden else {
+                    HoverPopupDiagnostics.record(.applicationUnavailable)
+                    return nil
+                }
+                guard let info = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID)
+                    as? [[String: Any]] else { return nil }
                 return info.compactMap(Observation.windowInfo)
             },
             readAX: { readAXState() },
             captureImage: { window in
                 guard !budget.expired, let captured = try captureImage(window, windowCapture: windowCapture),
                       !budget.expired,
-                      let data = encodeScreenshot(for: captured.image, config: settings.config).data else { return nil }
+                      let data = encodeScreenshot(for: captured.image, config: settings.config).data
+                else {
+                    HoverPopupDiagnostics.record(.imageUnavailable)
+                    return nil
+                }
                 return Observation.CapturedImage(data: data, captureBounds: captured.bounds)
             }
         ))
@@ -71,24 +82,36 @@ struct HoverPopupSystemCapture {
         var captureImage: (Observation.Window) throws -> Observation.CapturedImage?
     }
 
-    func capture(dependencies: Dependencies) -> HoverPopupCaptureResult {
-        Observation.captureResult(
+    func capture(
+        dependencies: Dependencies,
+        report: @escaping (HoverPopupDiagnostics.Reason) -> Void = HoverPopupDiagnostics.record
+    ) -> HoverPopupCaptureResult {
+        func unavailable(_ reason: HoverPopupDiagnostics.Reason) -> Observation.State? {
+            report(reason)
+            return nil
+        }
+        let result = Observation.captureResult(
             rootWindowID: rootID, pid: pid, rootBounds: rootBounds,
             requireForeground: false, allowInput: settings.allowInput,
             allowBackgroundInput: settings.allowBackgroundInput,
             dependencies: .init(readState: {
-                guard !budget.expired, let windows = dependencies.readWindows(),
-                      let index = windows.firstIndex(where: { $0.windowID == rootID }),
-                      windows[index].pid == pid, windows[index].bounds == rootBounds,
-                      windows[index].isVisible else { return nil }
+                guard !budget.expired else { return unavailable(.deadlineExpired) }
+                guard let windows = dependencies.readWindows() else { return unavailable(.windowListUnavailable) }
+                guard let index = windows.firstIndex(where: { $0.windowID == rootID }),
+                      windows[index].isVisible else { return unavailable(.rootNotOnScreen) }
+                guard windows[index].pid == pid, windows[index].bounds == rootBounds else {
+                    return unavailable(.rootGeometryChanged)
+                }
                 // 先用 CG 作宽松候选筛选；无候选不进入 AX，也不把其他 App 纳入候选。
                 let hasCandidate = windows[..<index].contains {
                     $0.pid == pid && $0.isVisible && $0.layer >= 0
                         && Observation.geometricallyRelated($0.bounds, rootBounds)
                 }
                 guard hasCandidate else { return Observation.State(windows: windows, rootIsForeground: false) }
-                guard !budget.expired, var state = dependencies.readAX(), !budget.expired,
-                      let freshWindows = dependencies.readWindows() else { return nil }
+                guard !budget.expired else { return unavailable(.deadlineExpired) }
+                guard var state = dependencies.readAX() else { return unavailable(.axStateUnavailable) }
+                guard !budget.expired else { return unavailable(.deadlineExpired) }
+                guard let freshWindows = dependencies.readWindows() else { return unavailable(.windowListUnavailable) }
                 state = Observation.State(
                     windows: freshWindows, independentWindowIDs: state.independentWindowIDs,
                     independentWindowBounds: state.independentWindowBounds, rootIsForeground: state.rootIsForeground
@@ -96,31 +119,37 @@ struct HoverPopupSystemCapture {
                 return state
             }, captureImage: dependencies.captureImage), budget: budget
         )
+        if result.isIncomplete { report(.incompleteCapture) }
+        return result
     }
 
     private func readAXState() -> Observation.State? {
         let app = AXUIElementCreateApplication(pid)
-        guard let windows = attribute(app, kAXWindowsAttribute) as? [AXUIElement],
-              windows.count <= Self.maximumAXWindows else { return nil }
+        guard let windows = readAXWindows(app) else { return nil }
         var ids: Set<CGWindowID> = []
         var bounds: [CGRect] = []
         var root: AXUIElement?
         for window in windows {
-            guard prepare(window) else { return nil }
+            guard prepare(window) else { HoverPopupDiagnostics.record(.axTimeoutSetup); return nil }
             let id = SkyLightSPI.shared.windowID(for: window)
             if id == rootID {
-                guard frame(window) == rootBounds else { return nil }
+                let observedBounds = frame(window)
+                guard observedBounds == rootBounds else {
+                    HoverPopupDiagnostics.recordRootFrame(expected: rootBounds, observed: observedBounds)
+                    return nil
+                }
                 root = window
                 continue
             }
-            guard let exclusion = windowExclusion(window, id: id) else { return nil }
+            guard let exclusion = windowExclusion(window, id: id) else {
+                HoverPopupDiagnostics.record(.axExclusionUnavailable)
+                return nil
+            }
             if let id = exclusion.id { ids.insert(id) }
             if let rectangle = exclusion.bounds { bounds.append(rectangle) }
         }
         // 部分 App 的 AXWindows 不完整；只接受仍映射到绑定 ID 的 main/focused 句柄。
-        guard let root = root ?? boundRoot(app), rootOwnerMatches(root), frame(root) == rootBounds,
-              !application.isTerminated, !application.isHidden,
-              !budget.expired else { return nil }
+        guard let root = validatedRoot(root, app: app) else { return nil }
         // 后台授权不依赖前台窗口；兼容模式查询也受同一 AX/总预算约束。
         var foreground = false
         if settings.allowInput, NSWorkspace.shared.frontmostApplication?.processIdentifier == pid,
@@ -131,6 +160,34 @@ struct HoverPopupSystemCapture {
         return Observation.State(
             windows: [], independentWindowIDs: ids, independentWindowBounds: bounds, rootIsForeground: foreground
         )
+    }
+
+    private func readAXWindows(_ app: AXUIElement) -> [AXUIElement]? {
+        guard let windows = attribute(app, kAXWindowsAttribute) as? [AXUIElement] else {
+            HoverPopupDiagnostics.record(.axWindowsUnavailable)
+            return nil
+        }
+        guard windows.count <= Self.maximumAXWindows else {
+            HoverPopupDiagnostics.record(.axWindowLimit)
+            return nil
+        }
+        return windows
+    }
+
+    private func validatedRoot(_ root: AXUIElement?, app: AXUIElement) -> AXUIElement? {
+        guard let root = root ?? boundRoot(app) else { HoverPopupDiagnostics.record(.axRootMissing); return nil }
+        guard rootOwnerMatches(root) else { HoverPopupDiagnostics.record(.axRootOwnerMismatch); return nil }
+        let observedBounds = frame(root)
+        guard observedBounds == rootBounds else {
+            HoverPopupDiagnostics.recordRootFrame(expected: rootBounds, observed: observedBounds)
+            return nil
+        }
+        guard !application.isTerminated, !application.isHidden else {
+            HoverPopupDiagnostics.record(.applicationUnavailable)
+            return nil
+        }
+        guard !budget.expired else { HoverPopupDiagnostics.record(.deadlineExpired); return nil }
+        return root
     }
 
     private func boundRoot(_ app: AXUIElement) -> AXUIElement? {
@@ -208,5 +265,4 @@ struct HoverPopupSystemCapture {
         guard let image = PopupWindowImage.hardware(window.windowID, bounds: window.bounds) else { return nil }
         return (image, window.bounds)
     }
-
 }

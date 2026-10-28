@@ -68,7 +68,9 @@ final class HoverPopupCaptureWorker: @unchecked Sendable {
     ) -> HoverPopupCaptureResult {
         lock.lock()
         guard active == nil, !budget.expired else {
+            let reason: HoverPopupDiagnostics.Reason = active == nil ? .deadlineExpired : .workerBusy
             lock.unlock()
+            HoverPopupDiagnostics.record(reason)
             return .incomplete
         }
         let work = Work(operation: operation)
@@ -89,6 +91,7 @@ final class HoverPopupCaptureWorker: @unchecked Sendable {
         guard !budget.expired, let result = work.result else {
             work.abandoned = true
             work.result = nil
+            HoverPopupDiagnostics.record(.deadlineExpired)
             return .incomplete
         }
         return result.isIncomplete ? .incomplete : result
