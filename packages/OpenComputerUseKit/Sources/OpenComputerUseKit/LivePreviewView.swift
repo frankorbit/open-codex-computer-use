@@ -12,8 +12,11 @@ import AppKit
 /// 视频和虚拟指针在本地合成，画中画不会接收或转发目标 App 的输入。
 @MainActor
 final class LivePreviewView: NSView {
+    let controls = LivePreviewControls()
+
     var image: CGImage? {
         didSet {
+            if image == nil { controls.rootUnitRect = CGRect(x: 0, y: 0, width: 1, height: 1) }
             needsDisplay = true
             if oldValue?.width != image?.width || oldValue?.height != image?.height {
                 window?.invalidateShadow()
@@ -99,7 +102,7 @@ final class LivePreviewView: NSView {
             return
         }
         let point = convert(event.locationInWindow, from: nil)
-        guard bounds.contains(point) else {
+        guard bounds.contains(point), controls.hitTest(point) == nil else {
             clearHoverCursor()
             return
         }
@@ -143,7 +146,8 @@ final class LivePreviewView: NSView {
         // 不覆盖其他窗口、菜单或鼠标已离开后的光标；拖拽时允许越过边界。
         if resizeGesture == nil {
             guard NSWindow.windowNumber(at: point, belowWindowWithWindowNumber: 0) == window.windowNumber,
-                  bounds.contains(convert(window.convertPoint(fromScreen: point), from: nil))
+                  bounds.contains(convert(window.convertPoint(fromScreen: point), from: nil)),
+                  controls.hitTest(convert(window.convertPoint(fromScreen: point), from: nil)) == nil
             else {
                 clearHoverCursor()
                 return

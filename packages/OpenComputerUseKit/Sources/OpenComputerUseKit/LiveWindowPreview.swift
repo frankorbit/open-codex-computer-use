@@ -363,6 +363,7 @@ extension LiveWindowPreview {
             view.cursorPoint = nil
         }
         canvasBounds = canvas
+        view.controls.anchor(root: windowBounds, canvas: canvas)
         view.showFrame(composed.image)
         view.sourceSize = canvas.size
     }

@@ -55,12 +55,15 @@ final class LivePreviewPanel: NSPanel, NSWindowDelegate {
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
         panel.standardWindowButton(.miniaturizeButton)?.isHidden = true
         panel.standardWindowButton(.zoomButton)?.isHidden = true
-        panel.standardWindowButton(.closeButton)?.setAccessibilityLabel("收起画中画，任务继续")
+        panel.standardWindowButton(.closeButton)?.isHidden = true
         panel.onHide = onHide
         view.autoresizingMask = [.width, .height]
         view.setAccessibilityElement(true)
-        view.setAccessibilityRole(.image)
+        view.setAccessibilityRole(.group)
         view.setAccessibilityLabel("Computer Use 本地实时画中画")
+        view.controls.frame = view.bounds
+        view.controls.autoresizingMask = [.width, .height]
+        view.addSubview(view.controls)
         panel.contentView = view
         if let screen = NSScreen.main {
             panel.setFrameOrigin(CGPoint(
