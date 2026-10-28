@@ -208,7 +208,8 @@ final class LiveWindowPreview: NSObject {
         else {
             throw PreviewCaptureError.targetUnavailable
         }
-        let session = try LivePreviewCapture.makeStream(for: window)
+        let session = try LivePreviewCapture.makeStream(for: window, content: content,
+                                                        visible: window.isOnScreen && !app.isHidden)
         // 取消、建流失败或切窗时也要保留回调接收者，直到消费循环和清理退出。
         defer { withExtendedLifetime(session) {} }
         do {
@@ -223,12 +224,12 @@ final class LiveWindowPreview: NSObject {
             }
             capture = session
             windowBounds = window.frame
-            monitorTarget(target, app: app, size: window.frame.size, generation: generation)
+            monitorTarget(target, app: app, bounds: window.frame, plan: session.plan, generation: generation)
             for await event in session.events {
                 guard !Task.isCancelled, state.accepts(generation) else {
                     break
                 }
-                receive(event, target: target, captureSize: window.frame.size)
+                receive(event, target: target, capturedBounds: window.frame, plan: session.plan)
             }
         } catch {
             await Self.stopCapture(session)
@@ -236,11 +237,12 @@ final class LiveWindowPreview: NSObject {
         }
     }
 
-    private func receive(_ event: PreviewFrameEvent, target: LivePreviewTarget, captureSize: CGSize) {
+    private func receive(_ event: PreviewFrameEvent, target: LivePreviewTarget, capturedBounds: CGRect,
+                         plan: LivePreviewRootCapture.Plan) {
         switch event {
         case let .frame(image):
             frameGrace.cancel()
-            receive(image, target: target, captureSize: captureSize)
+            receive(image, target: target, capturedBounds: capturedBounds, plan: plan)
         case .transient:
             frameGrace.waitForCompleteFrame()
         case .unavailable:
@@ -267,7 +269,8 @@ final class LiveWindowPreview: NSObject {
 // MARK: - 本地弹层刷新与合成
 
 extension LiveWindowPreview {
-    private func monitorTarget(_ target: LivePreviewTarget, app: NSRunningApplication, size: CGSize, generation: UUID) {
+    private func monitorTarget(_ target: LivePreviewTarget, app: NSRunningApplication, bounds capturedBounds: CGRect,
+                               plan: LivePreviewRootCapture.Plan, generation: UUID) {
         monitor = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self, state.accepts(generation) else {
@@ -281,7 +284,10 @@ extension LiveWindowPreview {
                     return
                 }
                 let bounds = update.bounds
-                if bounds.size != size {
+                let visible = !app.isHidden && popupState.windows.contains { $0.windowID == target.windowID }
+                let currentPlan = LivePreviewRootCapture.plan(bounds: bounds, visible: visible,
+                                                              displays: WindowCaptureGeometry.activeDisplayBounds())
+                if !plan.acceptsFrame(captured: capturedBounds, current: bounds) || plan != currentPlan {
                     select(
                         LivePreviewTarget(pid: target.pid, windowID: target.windowID, bounds: bounds),
                         forceGeometry: true
@@ -293,7 +299,7 @@ extension LiveWindowPreview {
                 if LivePreviewPopupState.needsRender(
                     previousBounds: previousBounds, bounds: bounds, popupInvalidated: update.invalidated
                 ) { render() }
-                if rootImage != nil,
+                if plan.isolatesRoot, rootImage != nil,
                    let current = LivePreviewTarget(pid: target.pid, windowID: target.windowID, bounds: bounds),
                    !LivePreviewPopup.candidates(target: current, state: .init(windows: popupState.windows)).isEmpty,
                    let request = popupState.begin(now: now) {
@@ -304,7 +310,8 @@ extension LiveWindowPreview {
         }
     }
 
-    private func receive(_ image: CGImage, target: LivePreviewTarget, captureSize: CGSize) {
+    private func receive(_ image: CGImage, target: LivePreviewTarget, capturedBounds: CGRect,
+                         plan: LivePreviewRootCapture.Plan) {
         guard let app = targetApp, !app.isTerminated,
               let bounds = LivePreviewCapture.currentBounds(target)
         else {
@@ -312,7 +319,7 @@ extension LiveWindowPreview {
             return
         }
         // 窗口改尺寸就丢掉旧尺寸的帧，重新建流；不能将旧 buffer 与新几何混用。
-        guard bounds.size == captureSize else {
+        guard plan.acceptsFrame(captured: capturedBounds, current: bounds) else {
             select(LivePreviewTarget(pid: target.pid, windowID: target.windowID, bounds: bounds), forceGeometry: true)
             return
         }
@@ -347,16 +354,16 @@ extension LiveWindowPreview {
         guard !keyboardPresentation.isHoldingFrames, let rootImage, let windowBounds else { return }
         // 只有 root 新帧、弹层新图或失效时重绘；idle 不做逐帧 AX/截图。
         popupState.observe(popupState.windows, now: ProcessInfo.processInfo.systemUptime)
-        let layers = popupState.layers
-        let composed = LivePreviewPopup.composite(root: rootImage, bounds: windowBounds, layers: layers)
-        let canvas = composed == nil ? windowBounds : LivePreviewPopup.canvas(root: windowBounds, layers: layers)
+        let composed = LivePreviewRootCapture.render(root: rootImage, bounds: windowBounds,
+                                                     layers: popupState.layers, plan: capture?.plan ?? .independent)
+        let canvas = composed.canvas
         if canvasBounds != canvas {
             // 坐标空间改变时，不沿用上一幅合成画面的虚拟光标位置。
             view.cursorState = nil
             view.cursorPoint = nil
         }
         canvasBounds = canvas
-        view.showFrame(composed ?? rootImage)
+        view.showFrame(composed.image)
         view.sourceSize = canvas.size
     }
 
@@ -388,7 +395,8 @@ extension LiveWindowPreview {
     }
 
     func cursor(tip: CGPoint?, windowID: CGWindowID?, state cursorState: SoftwareCursorGlyphRenderState?) {
-        guard !view.keyboardInputVisible, let tip, windowID == state.target?.windowID, let bounds = canvasBounds,
+        guard capture?.plan.isolatesRoot == true, !view.keyboardInputVisible, let tip,
+              windowID == state.target?.windowID, let bounds = canvasBounds,
               let screen = NSScreen.screens.first, !state.hidden, view.image != nil
         else {
             view.cursorState = nil
