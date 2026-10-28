@@ -7,7 +7,7 @@ enum LivePreviewCapture {
     private static let blackBackground = CGColor(gray: 0, alpha: 1)
     private static let transparentBackground = CGColor(gray: 0, alpha: 0)
 
-    static func configuration(for size: CGSize, transparent: Bool = false) -> SCStreamConfiguration {
+    static func configuration(for size: CGSize, transparent: Bool = true) -> SCStreamConfiguration {
         let config = SCStreamConfiguration()
         let scale = min(2, 960 / max(size.width, size.height))
         config.width = max(1, Int(size.width * scale))

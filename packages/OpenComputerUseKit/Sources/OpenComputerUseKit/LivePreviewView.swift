@@ -13,7 +13,12 @@ import AppKit
 @MainActor
 final class LivePreviewView: NSView {
     var image: CGImage? {
-        didSet { needsDisplay = true }
+        didSet {
+            needsDisplay = true
+            if oldValue?.width != image?.width || oldValue?.height != image?.height {
+                window?.invalidateShadow()
+            }
+        }
     }
 
     var message = "正在连接窗口镜像…" {
@@ -222,10 +227,13 @@ final class LivePreviewView: NSView {
 
     override func draw(_: NSRect) {
         defer { drawKeyboardBadge() }
-        // 透明源像素和首帧加载阶段使用黑色底衬；比例由 panel 统一约束。
-        NSColor.black.setFill()
+        // 每帧先清空旧像素，弹层之外和窗口圆角的 alpha 保留到透明 panel。
+        NSColor.clear.setFill()
         bounds.fill(using: .copy)
         guard let image, let context = NSGraphicsContext.current?.cgContext else {
+            // 无帧时才绘制提示底衬；恢复画面后不能残留在透明区域。
+            NSColor(calibratedWhite: 0.05, alpha: 0.95).setFill()
+            NSBezierPath(roundedRect: bounds, xRadius: 12, yRadius: 12).fill()
             let paragraph = NSMutableParagraphStyle()
             paragraph.alignment = .center
             paragraph.lineBreakMode = .byTruncatingTail
@@ -264,7 +272,9 @@ final class LivePreviewView: NSView {
         )
         context.restoreGState()
     }
+}
 
+extension LivePreviewView {
     private func drawKeyboardBadge() {
         guard keyboardInputVisible else { return }
         // 固定尺寸的静态提示，不改变镜像比例，不把提示烧进模型截图。

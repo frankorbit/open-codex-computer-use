@@ -23,8 +23,9 @@ final class LivePreviewPanel: NSPanel, NSWindowDelegate {
     ) {
         super.init(contentRect: contentRect, styleMask: style, backing: backingStoreType, defer: flag)
         delegate = self
-        isOpaque = true
-        backgroundColor = .black
+        isOpaque = false
+        backgroundColor = .clear
+        hasShadow = true
         NotificationCenter.default.addObserver(self, selector: #selector(screenParametersChanged),
                                                name: NSApplication.didChangeScreenParametersNotification, object: nil)
     }

@@ -38,8 +38,9 @@ struct LivePreviewTests {
         #expect(view.bounds.height <= 481)
         #expect(try #require(panel.visibleFrame).contains(panel.frame))
         #expect(panel.contentAspectRatio == CGSize(width: 300, height: 900))
-        #expect(panel.isOpaque)
-        #expect(panel.backgroundColor == .black)
+        #expect(!panel.isOpaque)
+        #expect(panel.hasShadow)
+        #expect(panel.backgroundColor == .clear)
 
         view.image = nil
         view.showFrame(wide)

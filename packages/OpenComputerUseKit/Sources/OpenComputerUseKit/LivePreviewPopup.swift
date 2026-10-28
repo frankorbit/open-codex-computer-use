@@ -74,8 +74,8 @@ enum LivePreviewPopup {
                   data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
                   space: colorSpace, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
               ) else { return nil }
-        context.setFillColor(CGColor(gray: 0, alpha: 1))
-        context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        // union 画布中不属于任何窗口的区域必须保持透明，不能填成预览黑框。
+        context.clear(CGRect(x: 0, y: 0, width: width, height: height))
         context.scaleBy(x: CGFloat(width) / canvas.width, y: CGFloat(height) / canvas.height)
         context.draw(root, in: destination(bounds, canvas: canvas))
         // WindowServer 列表是前到后，绘制顺序必须反转。

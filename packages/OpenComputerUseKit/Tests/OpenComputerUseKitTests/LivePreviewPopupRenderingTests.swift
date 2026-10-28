@@ -1,17 +1,18 @@
 import CoreGraphics
 import CoreVideo
 import Foundation
-import ScreenCaptureKit
 @testable import OpenComputerUseKit
+import ScreenCaptureKit
 import Testing
 
 struct LivePreviewPopupRenderingTests {
-    @Test func `popup capture keeps alpha while root retains its background and cross Space mode`() {
+    @Test func `root and popup capture preserve alpha and cross Space mode`() {
         let size = CGSize(width: 314, height: 350)
         let popup = LivePreviewCapture.configuration(for: size, transparent: true)
         let root = LivePreviewCapture.configuration(for: size)
         #expect(popup.backgroundColor.alpha == 0)
-        #expect(root.backgroundColor.alpha == 1)
+        #expect(root.backgroundColor.alpha == 0)
+        #expect(!root.shouldBeOpaque)
         #expect(popup.pixelFormat == kCVPixelFormatType_32BGRA)
         #expect(!popup.shouldBeOpaque)
         #expect(root.ignoreGlobalClipSingleWindow && popup.ignoreGlobalClipSingleWindow)
@@ -97,7 +98,7 @@ struct LivePreviewPopupRenderingTests {
         }
         let faded = try #require(PopupWindowImage.masked(rendered, alphaFrom: half))
         let value = try pixel(faded, x: 2, y: 1)
-        #expect((126...130).contains(Int(value[3])))
+        #expect((126 ... 130).contains(Int(value[3])))
         #expect(abs(Int(value[0]) - Int(source[0]) / 2) <= 2, "premultiplied color fades with the alpha")
     }
 

@@ -118,7 +118,7 @@ struct LivePreviewLayoutTests {
         #expect(!panel.userInteractionActive)
     }
 
-    @Test @MainActor func `pixels fill rounded bounds and transparent pixels use black matte`() throws {
+    @Test @MainActor func `pixels fill bounds and transparent frames clear previous opaque pixels`() throws {
         let source = try #require(CGContext(data: nil, width: 96, height: 45, bitsPerComponent: 8, bytesPerRow: 0,
                                             space: CGColorSpaceCreateDeviceRGB(),
                                             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
@@ -148,7 +148,19 @@ struct LivePreviewLayoutTests {
         view.image = try #require(source.makeImage())
         view.draw(view.bounds)
         let matte = try #require(bitmap.colorAt(x: 0, y: 0)?.usingColorSpace(.deviceRGB))
-        #expect(matte.alphaComponent == 1)
+        #expect(matte.alphaComponent == 0)
         #expect(matte.redComponent == 0 && matte.greenComponent == 0 && matte.blueComponent == 0)
+
+        // 加载提示出现后仍须清掉底衬；真实黑色像素不能被当作透明色抠除。
+        view.image = nil
+        view.draw(view.bounds)
+        #expect(try #require(bitmap.colorAt(x: 30, y: 30)).alphaComponent > 0.9)
+        source.setFillColor(CGColor(gray: 0, alpha: 1))
+        source.fill(CGRect(x: 0, y: 0, width: 48, height: 45))
+        view.image = try #require(source.makeImage())
+        view.draw(view.bounds)
+        let black = try #require(bitmap.colorAt(x: 30, y: 30)?.usingColorSpace(.deviceRGB))
+        #expect(black.alphaComponent > 0.99 && black.redComponent == 0)
+        #expect(try #require(bitmap.colorAt(x: 300, y: 30)).alphaComponent == 0)
     }
 }

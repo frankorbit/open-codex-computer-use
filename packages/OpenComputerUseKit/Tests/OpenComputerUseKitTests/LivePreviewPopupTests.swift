@@ -300,7 +300,7 @@ extension LivePreviewPopupTests {
         print("PIP composite 960x640 root + 4 full-size layers: \(milliseconds) ms/frame (120 frames)")
     }
 
-    @Test func `composition contains actual popup pixels black exterior and front to back order`() throws {
+    @Test func `composition contains actual popup pixels transparent exterior and front to back order`() throws {
         let rootBounds = CGRect(x: -100, y: -100, width: 100, height: 100)
         let front = Window(windowID: 1, pid: 123, bounds: CGRect(x: -20, y: -80, width: 40, height: 40))
         let back = Window(windowID: 2, pid: 123, bounds: CGRect(x: -40, y: -80, width: 50, height: 50))
@@ -321,7 +321,7 @@ extension LivePreviewPopupTests {
         #expect(pixel(20, 20) == [255, 0, 0, 255])
         #expect(pixel(140, 60) == [0, 0, 255, 255])
         #expect(pixel(180, 60) == [0, 255, 0, 255])
-        #expect(pixel(220, 180) == [0, 0, 0, 255])
+        #expect(pixel(220, 180) == [0, 0, 0, 0])
         let rootOnly = try #require(Popup.composite(root: image(1, 0, 0), bounds: rootBounds, layers: []))
         #expect(rootOnly.width == 4 && rootOnly.height == 4)
     }
