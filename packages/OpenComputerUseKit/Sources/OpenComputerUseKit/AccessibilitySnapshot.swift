@@ -318,6 +318,15 @@ enum SnapshotBuilder {
             )
             let context = RenderContext(
                 windowBounds: windowBounds, focusedElement: focusedElement,
+                focusedPath: focusedAncestorPath(
+                    focused: focusedElement, root: rootElement, pid: app.pid,
+                    maximumDepth: min(treeLimits.maxDepth, 64),
+                    reader: AXFocusedPathReader(owner: { element in
+                        var owner: pid_t = 0
+                        return AXUIElementGetPid(element, &owner) == .success ? owner : nil
+                    }, parent: { copyElement($0, attribute: kAXParentAttribute) },
+                    equal: { CFEqual($0, $1) })
+                ),
                 textLimit: textLimit, treeLimits: treeLimits, activeMenus: activeMenus
             )
             var result = TreeRenderer(context: context)
@@ -932,6 +941,7 @@ enum BlockingAsyncBridge {
 private struct RenderContext {
     let windowBounds: CGRect?
     let focusedElement: AXUIElement?
+    let focusedPath: [AXUIElement]
     let textLimit: SnapshotTextLimit
     let treeLimits: AccessibilityTreeLimits
     let activeMenus: AXActiveMenuTree<AXUIElement>
@@ -1136,7 +1146,11 @@ private struct TreeRenderer {
             focusedSummary = lineBody
         }
 
-        if role == kAXRowRole as String, boolValue(of: root, attribute: kAXSelectedAttribute) != true {
+        if shouldSummarizeAXRow(
+            role: role,
+            selected: role == kAXRowRole as String && boolValue(of: root, attribute: kAXSelectedAttribute) == true,
+            element: root, focusedPath: context.focusedPath, equal: { CFEqual($0, $1) }
+        ) {
             for text in Array(rowTexts.dropFirst()) {
                 lines.append(text)
             }
