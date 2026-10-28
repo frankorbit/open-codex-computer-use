@@ -71,10 +71,10 @@ struct HoverPopupObservation {
         return [.text([identity, geometry, usage].joined(separator: "\n")), ToolResultContentItem(dictionary: image)]
     }
 
-    static let unavailableNote = "No verifiable popup candidates were captured. Observation is limited to "
-        + "visible same-process windows near the bound window; inaccessible AX window metadata, hidden/off-screen "
-        + "windows, changing identity/geometry or capture failure may omit candidates."
-        + " This does not prove no popup exists."
+    static let unavailableNote = "Popup observation completed within its supported scope: no verifiable popup candidates were captured. "
+        + "This is not an incomplete observation or an input failure. The scope covers visible same-process windows "
+        + "near the bound window; it does not prove that no other popup exists. No popup input tokens were issued. "
+        + "Do not guess popup coordinates. Main-window targets still require fresh observation and all existing input checks."
 
     /// 测试入口只接受窗口元数据与内存图片，不需要运行 AX、截图或 GUI。
     struct Window: Equatable {

@@ -139,6 +139,30 @@ final class PopupReadOnlyTests: XCTestCase {
         XCTAssertEqual(captures, 1)
     }
 
+    func testCompletedEmptyObservationIsDistinctFromIncompleteAndCannotReusePopupToken() throws {
+        let (snapshot, popup) = fixture()
+        var captures = 0
+        let service = ComputerUseService(snapshots: ["test.popup": snapshot], snapshotDependencies: .init(
+            resolve: { _ in snapshot.app }, build: { _, _, _, policy, _ in
+                XCTAssertEqual(policy, .readOnly)
+                return snapshot
+            }, processIdentity: popupTestProcessIdentity, bindingIdentity: popupTestBindingIdentity,
+            captureHoverPopups: { _, _ in
+                captures += 1
+                return .init(popups: captures == 1 ? [popup] : [])
+            }
+        ))
+        let dispatcher = ComputerUseToolDispatcher(service: service)
+        _ = try dispatcher.callTool(name: "hover", arguments: ["app": "test.popup", "observe_only": true])
+        let result = try dispatcher.callTool(name: "hover", arguments: ["app": "test.popup", "observe_only": true])
+        XCTAssertFalse(result.isError)
+        XCTAssertTrue(result.textContent.contains("Popup observation completed within its supported scope"))
+        XCTAssertFalse(result.textContent.contains("Popup observation incomplete"))
+        XCTAssertFalse(result.textContent.contains("popup_token="))
+        XCTAssertThrowsError(try service.clickPopup(app: "test.popup", arguments: ["popup_token": popup.token, "x": 1, "y": 1]))
+        XCTAssertEqual(captures, 2)
+    }
+
     func testIncompleteObservationKeepsMainSnapshotButDropsAllPopupTokens() throws {
         let (snapshot, popup) = fixture()
         var captures = 0

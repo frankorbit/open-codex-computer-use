@@ -93,11 +93,15 @@ func executeAXAction(
         let result = diagnostics.perform(action: action, attempt: index + 1, perform)
         // 调用已发出；即使返回 unsupported，也不能证明零副作用或重放已成功的前几次。
         guard result == .success else {
-            throw ComputerUseError.message(
-                "AXUIElementPerformAction(\(action)) returned \(result.rawValue) on attempt \(index + 1)/\(attempts) "
-                    + "after \(index) successful AX returns; effect is unknown. "
-                    + "Observe before further input; no further AX candidate or mouse fallback was sent."
-            )
+            let message = "AXUIElementPerformAction(\(action)) returned \(result.rawValue) "
+                + "on attempt \(index + 1)/\(attempts) "
+                + "after \(index) successful AX returns; effect is unknown. "
+                + "Observe before further input; no further AX candidate or mouse fallback was sent."
+            if result == .failure, action == kAXPressAction as String, attempts == 1,
+               diagnostics.source == .original, diagnostics.role == kAXButtonRole as String {
+                throw AXPressFailure(message: message)
+            }
+            throw ComputerUseError.message(message)
         }
         if index < attempts - 1 {
             pauseBetweenAttempts()

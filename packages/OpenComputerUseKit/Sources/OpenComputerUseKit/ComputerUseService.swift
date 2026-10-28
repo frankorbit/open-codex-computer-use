@@ -1052,6 +1052,9 @@ public final class ComputerUseService {
                         receivingWindow: receivingWindow(for: record.element, at: targetPoint, snapshot: snapshot)
                     )
                 }
+            } catch let failure as AXPressFailure {
+                settleVisualCursor(at: cursorTarget)
+                return failedPressReadBack(failure, snapshot: snapshot, query: query)
             } catch {
                 settleVisualCursor(at: cursorTarget)
                 throw error
@@ -1110,6 +1113,33 @@ public final class ComputerUseService {
         }
 
         return try actionResult(for: query)
+    }
+
+    /// 错误后的快照只作诊断；不发布新输入索引或弹层 token，也不恢复/打开窗口。
+    private func failedPressReadBack(_ failure: AXPressFailure, snapshot: AppSnapshot, query: String) -> ToolCallResult {
+        defer {
+            snapshotCache.invalidate(query: query, resolvedApp: snapshot.app)
+            targetedElements.removeAll(forPIDs: [snapshot.app.pid])
+            hoverPopupCache.clear()
+        }
+        return failure.result {
+            guard !Task.isCancelled else { throw CancellationError() }
+            guard let binding = snapshotCache.observationBinding(for: query),
+                  let rootID = snapshot.targetWindowID else {
+                throw ComputerUseError.stateUnavailable("Failed-action observation has no bound window")
+            }
+            try binding.validate(current: snapshotDependencies.processIdentity(snapshot.app.pid))
+            let fresh = try snapshotDependencies.build(snapshot.app, .defaults, .defaults, .readOnly, .defaults)
+            guard !Task.isCancelled else { throw CancellationError() }
+            try binding.validate(current: snapshotDependencies.processIdentity(snapshot.app.pid))
+            guard fresh.app.pid == snapshot.app.pid, fresh.targetWindowID == rootID else {
+                throw ComputerUseError.stateUnavailable("Failed-action observation target changed")
+            }
+            var content = [ToolResultContentItem.text(fresh.renderedText(style: .actionResult))]
+            if let note = fresh.screenshotNote { content.append(.text(note)) }
+            if let data = fresh.screenshotData { content.append(.screenshotImage(data)) }
+            return content
+        }
     }
 
     public func performSecondaryAction(app query: String, elementIndex: String, action: String) throws -> ToolCallResult {
