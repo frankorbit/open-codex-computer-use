@@ -519,6 +519,7 @@ public final class ComputerUseService {
     private var keyboardInputBackend: KeyboardInputBackend = .live
     private var sidebarSelectionBackend: ((AXUIElement, AppSnapshot) throws -> Bool)?
     private var axActionBackend: ((AXUIElement, String) -> AXError)?
+    private var descendantCandidatesBackend: ((AXUIElement) -> [ElementRecord])?
 
     public init(allowsForegroundClickOnce: Bool = false) {
         self.allowsForegroundClickOnce = allowsForegroundClickOnce
@@ -536,7 +537,8 @@ public final class ComputerUseService {
         snapshots: [String: AppSnapshot] = [:], snapshotDependencies: SnapshotDependencies,
         allowsForegroundClickOnce: Bool = false,
         sidebarSelectionBackend: ((AXUIElement, AppSnapshot) throws -> Bool)? = nil,
-        axActionBackend: ((AXUIElement, String) -> AXError)? = nil
+        axActionBackend: ((AXUIElement, String) -> AXError)? = nil,
+        descendantCandidatesBackend: ((AXUIElement) -> [ElementRecord])? = nil
     ) {
         self.allowsForegroundClickOnce = allowsForegroundClickOnce
         snapshotCache = AppSnapshotCache(snapshots: snapshots, bindingIdentity: snapshotDependencies.bindingIdentity)
@@ -544,6 +546,7 @@ public final class ComputerUseService {
         self.snapshotDependencies = snapshotDependencies
         self.sidebarSelectionBackend = sidebarSelectionBackend
         self.axActionBackend = axActionBackend
+        self.descendantCandidatesBackend = descendantCandidatesBackend
     }
 
     init(snapshots: [String: AppSnapshot], keyboardInputBackend: KeyboardInputBackend) {
@@ -1550,11 +1553,14 @@ public final class ComputerUseService {
         }
     }
 
+    // 语义身份与诊断独立传递，避免日志字段控制动作选择。
+    // swiftlint:disable:next function_parameter_count
     private func performPreferredClick(
         on record: ElementRecord,
         pid: pid_t,
         button: MouseButtonKind,
         clickCount: Int,
+        isOriginalTarget: Bool,
         diagnostics: AXActionDiagnosticContext
     ) throws -> Bool {
         guard let element = record.element else {
@@ -1584,7 +1590,10 @@ public final class ComputerUseService {
                 return true
             }
 
-            if try performAction(
+            // 行的单击不能借后代文本框的“确认编辑”完成；原目标与其他动作语义保持不变。
+            let excludesTextFieldConfirmation = !isOriginalTarget && clickCount == 1
+                && record.role == kAXTextFieldRole as String
+            if !excludesTextFieldConfirmation, try performAction(
                 named: kAXConfirmAction as String,
                 on: element,
                 availableActions: record.rawActions,
@@ -1862,6 +1871,7 @@ public final class ComputerUseService {
                 pid: snapshot.app.pid,
                 button: button,
                 clickCount: clickCount,
+                isOriginalTarget: true,
                 diagnostics: .init(source: .original, role: record.role, originalIndex: record.index)
             ) {
                 debugClickDecision("handled by preferred target \(clickDebugDescription(record))")
@@ -1875,6 +1885,7 @@ public final class ComputerUseService {
                     pid: snapshot.app.pid,
                     button: button,
                     clickCount: clickCount,
+                    isOriginalTarget: sameElement(record.element, candidate.element),
                     diagnostics: .init(source: .descendant, role: candidate.role, originalIndex: record.index)
                 ) {
                     debugClickDecision("handled by descendant \(clickDebugDescription(candidate))")
@@ -1895,6 +1906,7 @@ public final class ComputerUseService {
                            pid: snapshot.app.pid,
                            button: button,
                            clickCount: clickCount,
+                           isOriginalTarget: sameElement(record.element, hitRecord.element),
                            diagnostics: .init(source: .hit, role: hitRecord.role, originalIndex: record.index)
                        )
                     {
@@ -1917,6 +1929,7 @@ public final class ComputerUseService {
                                 pid: snapshot.app.pid,
                                 button: button,
                                 clickCount: clickCount,
+                                isOriginalTarget: sameElement(record.element, candidate.element),
                                 diagnostics: .init(
                                     source: .hitDescendant,
                                     role: candidate.role,
@@ -2145,6 +2158,8 @@ public final class ComputerUseService {
         guard depth < 3 else {
             return []
         }
+        // 测试仅替换枚举结果；外层候选过滤、排序及实际分派仍走生产路径。
+        if let descendantCandidatesBackend { return descendantCandidatesBackend(element) }
 
         var results: [ElementRecord] = []
         for child in copyChildren(of: element) {
