@@ -2136,7 +2136,11 @@ func meaningfulRawActions(_ values: [String], role: String) -> [String] {
                 kAXMenuRole as String,
                 kAXMenuItemRole as String,
             ].contains(role) {
-                ignored.append(contentsOf: ["AXCancel", "AXPick"])
+                ignored.append("AXPick")
+                // 菜单本身声明的取消动作必须可见；不能引导调用方取消父编辑器。
+                if role != kAXMenuRole as String {
+                    ignored.append("AXCancel")
+                }
             }
 
             return !ignored.contains($0)

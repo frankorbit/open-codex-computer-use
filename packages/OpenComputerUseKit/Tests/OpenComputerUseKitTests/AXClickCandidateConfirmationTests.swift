@@ -277,4 +277,34 @@ extension AXClickCandidateConfirmationTests {
         _ = try service.performSecondaryAction(app: "test.candidate-confirm", elementIndex: "18", action: "AXConfirm")
         XCTAssertEqual(actions, ["AXConfirm"])
     }
+
+    func testAdvertisedMenuCancelUsesOriginalTargetOnceAndNeverScansCandidates() throws {
+        var actions: [String] = []
+        let service = service(root: root(role: "AXMenu", actions: ["AXCancel", "AXPick"]), candidates: { _ in
+            XCTFail("取消菜单不得扫描候选或转向父编辑器"); return []
+        }, perform: { element, action in
+            XCTAssertTrue(CFEqual(element, self.rootElement))
+            actions.append(action)
+            return .success
+        })
+        _ = try service.performSecondaryAction(app: "test.candidate-confirm", elementIndex: "18", action: "Cancel")
+        XCTAssertEqual(actions, ["AXCancel"])
+    }
+
+    func testMenuCancelFailureIsNotRetriedAndMissingActionSendsNothing() {
+        for failure: AXError? in [nil, .apiDisabled, .cannotComplete, .invalidUIElement] {
+            var actions: [String] = []
+            let advertised = failure == nil ? ["AXPick"] : ["AXCancel", "AXPick"]
+            let service = service(root: root(role: "AXMenu", actions: advertised), candidates: { _ in
+                XCTFail("失败不得转向另一个目标"); return []
+            }, perform: { _, action in
+                actions.append(action)
+                return failure ?? .success
+            })
+            XCTAssertThrowsError(try service.performSecondaryAction(
+                app: "test.candidate-confirm", elementIndex: "18", action: "Cancel",
+            ))
+            XCTAssertEqual(actions, failure == nil ? [] : ["AXCancel"])
+        }
+    }
 }

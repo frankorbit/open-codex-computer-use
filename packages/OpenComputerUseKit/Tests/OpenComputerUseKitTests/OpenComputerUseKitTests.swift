@@ -1323,6 +1323,17 @@ final class OpenComputerUseKitTests: XCTestCase {
         )
     }
 
+    func testMenuCancelIsVisibleOnlyWhenAdvertisedByTheMenuItself() {
+        XCTAssertEqual(meaningfulRawActions(["AXCancel", "AXPick", "AXPress"], role: "AXMenu"), ["AXCancel"])
+        XCTAssertEqual(meaningfulActions(["AXCancel", "AXPick", "AXPress"], role: "AXMenu"), ["Cancel"])
+        XCTAssertEqual(meaningfulActions(["AXPick", "AXPress"], role: "AXMenu"), [])
+        for role in ["AXMenuBar", "AXMenuBarItem", "AXMenuItem"] {
+            XCTAssertEqual(meaningfulActions(["AXCancel", "AXPick", "AXPress"], role: role), [])
+        }
+        // 普通编辑器已有的取消动作不变，也不复制给它的子菜单。
+        XCTAssertEqual(meaningfulActions(["AXCancel"], role: "AXPopover"), ["Cancel"])
+    }
+
     func testAccessibilityRendererUsesOfficialZoomWindowActionName() {
         XCTAssertEqual(meaningfulActions(["AXZoomWindow"], role: kAXButtonRole as String), ["zoom the window"])
     }
