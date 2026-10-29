@@ -42,6 +42,10 @@ struct HoverPopupObservation {
             + " (Quartz top-left, y down); pixelSize=(\(pixelSize.width), \(pixelSize.height))."
             + " captureBounds=\(captureBounds.map { String(describing: $0) } ?? "unknown")."
             + " Main coordinates unchanged."
+            + (captureBounds != nil && captureBounds != bounds
+                ? " Partial window image: only captureBounds is observed;"
+                    + " off-screen or other-display content is not verified."
+                : "")
         let usage = if let method {
             "Image-local pixels: click({popup_token:\"\(token)\",x:...,y:...,click_method:\"\(method.rawValue)\"})"
                 + " / JS app.click([x,y],{popupToken:\"\(token)\",clickMethod:\"\(method.rawValue)\"})."

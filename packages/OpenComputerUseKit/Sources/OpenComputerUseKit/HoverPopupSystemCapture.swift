@@ -255,10 +255,10 @@ struct HoverPopupSystemCapture {
         guard !budget.expired else { return nil }
         do {
             let budget = budget, rootID = rootID
-            if let image = try BlockingAsyncBridge.run({
+            if let captured = try BlockingAsyncBridge.run({
                 try await windowCapture.capture(window, rootID: rootID, budget: budget)
             }) {
-                return (image, window.bounds)
+                return captured
             }
         } catch {
             // 显示器裁剪失败时仍可退回硬件缓冲区；预算耗尽时才上报，由调用方标记观察不完整。

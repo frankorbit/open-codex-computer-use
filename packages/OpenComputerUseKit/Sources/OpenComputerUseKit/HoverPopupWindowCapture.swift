@@ -22,7 +22,7 @@ actor HoverPopupWindowCapture {
     /// 不使用独立窗口过滤器：它会把 sheet / popover 与父窗口整组缩放进弹层尺寸。
     func capture(
         _ window: HoverPopupObservation.Window, rootID: CGWindowID, budget: HoverPopupBudget
-    ) async throws -> CGImage? {
+    ) async throws -> (image: CGImage, bounds: CGRect)? {
         guard !budget.expired else { return nil }
         let content = try await shareableContent()
         guard !budget.expired,
@@ -30,8 +30,11 @@ actor HoverPopupWindowCapture {
                   $0.windowID == window.windowID && $0.owningApplication?.processID == window.pid
                       && $0.frame == window.bounds && $0.isOnScreen
               }),
-              let width = Int(exactly: ceil(window.bounds.width)),
-              let height = Int(exactly: ceil(window.bounds.height)) else { return nil }
+              let capturedBounds = LivePreviewPopupRegion.visibleCaptureBounds(
+                  window: window.bounds, displays: content.displays.map(\.frame)
+              ),
+              let width = Int(exactly: ceil(capturedBounds.width)),
+              let height = Int(exactly: ceil(capturedBounds.height)) else { return nil }
         let configuration = SCStreamConfiguration()
         configuration.width = width
         configuration.height = height
@@ -40,9 +43,10 @@ actor HoverPopupWindowCapture {
         configuration.preservesAspectRatio = false
         let root = content.windows.first { $0.windowID == rootID }
         let mask = PopupWindowImage.hardware(window.windowID, bounds: window.bounds)
-        let image = try await PopupWindowImage.displayCrop(target, root: root, bounds: window.bounds, content: content,
-                                                          configuration: configuration, alphaMask: mask)
-        guard !budget.expired else { return nil }
-        return image
+        guard let image = try await PopupWindowImage.displayCrop(
+            target, root: root, bounds: window.bounds, content: content,
+            configuration: configuration, alphaMask: mask, captureBounds: capturedBounds
+        ), !budget.expired else { return nil }
+        return (image, capturedBounds)
     }
 }

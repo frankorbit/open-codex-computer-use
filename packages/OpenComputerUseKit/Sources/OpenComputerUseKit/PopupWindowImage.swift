@@ -9,7 +9,7 @@ import ScreenCaptureKit
 /// 弹层的半透明材质在渲染时与背后内容混合：背后什么都没有时合成为不透明深灰（实测 RGB 71），事后无法还原。
 /// 因此渲染时带上主窗口，并用跟随系统外观的窗口背景色作底（伸出主窗口的部分也有东西可模糊）；不包含桌面
 /// 层，不截壁纸、桌面图标或其他应用。底色会填满弹层圆角外和不可见区域，所以再按硬件缓冲区里弹层自身的
-/// 透明度做蒙版，圆角与不可见的辅助窗口仍是透明。弹层不在屏幕上或跨屏时退回硬件缓冲区。
+/// 透明度做蒙版，圆角与不可见的辅助窗口仍是透明。模型观察可显式指定单屏可见裁剪范围。
 enum PopupWindowImage {
     /// WindowServer 硬件采集：被遮挡也能读到，且只含该窗口。沿用主窗口截图的几何规则：窗口必须完整落在
     /// 一块显示器内（否则缓冲区可能被裁剪），图片必须与完整窗口等比，才能把像素映射回窗口坐标。
@@ -36,16 +36,22 @@ enum PopupWindowImage {
     }
 
     /// 首选路径：只包含弹层和它的主窗口（精确 window ID）的显示器过滤器，用显示器本地坐标裁剪到弹层位置。
-    /// 跨屏或部分离屏的窗口不猜裁剪偏移；输出尺寸由调用方的配置决定，并按该尺寸校验。
+    /// 显式 captureBounds 必须位于弹层内且完整落在一块显示器；调用方必须保留覆盖范围用于坐标映射。
     /// 在调用方的隔离域内执行，SCK 元数据不跨 actor 传递。
     nonisolated(nonsending) static func displayCrop(
         _ target: SCWindow, root: SCWindow?, bounds: CGRect, content: SCShareableContent,
-        configuration: SCStreamConfiguration, alphaMask: CGImage?
+        configuration: SCStreamConfiguration, alphaMask: CGImage?, captureBounds: CGRect? = nil
     ) async throws -> CGImage? {
+        let capturedBounds = captureBounds ?? bounds
         guard #available(macOS 14.2, *),
-              let region = LivePreviewPopupRegion.displayRegion(window: bounds, displays: content.displays.map(\.frame))
+              bounds.contains(capturedBounds),
+              let region = LivePreviewPopupRegion.displayRegion(
+                  window: capturedBounds, displays: content.displays.map(\.frame)
+              )
         else { return nil }
-        let filter = SCContentFilter(display: content.displays[region.index], including: captureWindows(target, root: root))
+        let filter = SCContentFilter(
+            display: content.displays[region.index], including: captureWindows(target, root: root)
+        )
         configuration.sourceRect = region.sourceRect
         // display-bound 过滤器默认包含子窗，必须显式关闭，关联弹层由各自采集负责。
         configuration.includeChildWindows = false
@@ -61,7 +67,8 @@ enum PopupWindowImage {
                   from: CGRect(x: 0, y: 0, width: CVPixelBufferGetWidth(buffer), height: CVPixelBufferGetHeight(buffer))
               ),
               image.width == configuration.width, image.height == configuration.height else { return nil }
-        return alphaMask.flatMap { masked(image, alphaFrom: $0) } ?? image
+        // 完整窗口蒙版不能缩放到局部截图，否则会错误移动可见内容的边缘。
+        return capturedBounds == bounds ? (alphaMask.flatMap { masked(image, alphaFrom: $0) } ?? image) : image
     }
 
     /// 用蒙版图片的透明度裁出图片：蒙版透明处变透明，半透明处按比例淡出（预乘），不透明处保持原样。
