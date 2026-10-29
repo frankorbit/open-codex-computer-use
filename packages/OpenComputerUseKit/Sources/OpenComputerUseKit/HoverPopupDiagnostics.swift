@@ -9,12 +9,29 @@ enum HoverPopupDiagnostics {
         case axStateUnavailable, axWindowsUnavailable, axWindowLimit
         case axTimeoutSetup, axExclusionUnavailable, axRootMissing, axRootOwnerMismatch
         case applicationUnavailable, imageUnavailable, incompleteCapture
+        case candidateLimit, candidateChangedAfterCapture, candidateChangedBeforeReturn
+        case imageCaptureFailed, imageDataInvalid
     }
 
     private static let logger = Logger(subsystem: "ai.today.ocu", category: "popup")
 
     static func record(_ reason: Reason) {
         logger.notice("popup_observation_incomplete reason=\(reason.rawValue, privacy: .public)")
+    }
+
+    /// 只复用本轮已有窗口元数据，不重新查询、不记录标题或图片。
+    static func recordCandidate(
+        _ reason: Reason, expected: HoverPopupObservation.Window?, observed: HoverPopupObservation.Window?
+    ) {
+        func description(_ window: HoverPopupObservation.Window?) -> String {
+            guard let window else { return "unavailable" }
+            return "id=\(window.windowID),pid=\(window.pid),bounds=\(window.bounds),"
+                + "alpha=\(window.alpha),onscreen=\(window.isOnscreen),layer=\(window.layer)"
+        }
+        logger.notice("""
+        popup_observation_incomplete reason=\(reason.rawValue, privacy: .public) \
+        expected=\(description(expected), privacy: .public) observed=\(description(observed), privacy: .public)
+        """)
     }
 
     static func recordRootFrame(expected: CGRect, observed: CGRect?) {

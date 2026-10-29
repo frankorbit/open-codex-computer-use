@@ -146,7 +146,8 @@ struct HoverPopupObservation {
         rootWindowID: CGWindowID, pid: pid_t, rootBounds: CGRect,
         requireForeground: Bool = true, allowInput: Bool = true,
         allowBackgroundInput: Bool = false, dependencies: Dependencies,
-        budget: HoverPopupBudget? = nil
+        budget: HoverPopupBudget? = nil,
+        report: (HoverPopupDiagnostics.Reason, Window?, Window?) -> Void = HoverPopupDiagnostics.recordCandidate
     ) -> HoverPopupCaptureResult {
         var inputEligible = allowInput
         func readState() -> State? {
@@ -169,6 +170,7 @@ struct HoverPopupObservation {
         var captured: [(Window, HoverPopupObservation)] = []
         let initialCandidates = candidates(initial)
         var incomplete = initialCandidates.count > 4
+        if incomplete { report(.candidateLimit, nil, nil) }
         // 同时限制截图尝试次数，避免大量临时窗口导致无界等待。
         for window in initialCandidates.prefix(4) {
             guard let before = readState(), validRoot(before) else { return .incomplete }
@@ -177,13 +179,20 @@ struct HoverPopupObservation {
             do {
                 capturedImage = try dependencies.captureImage(window)
             } catch {
+                report(.imageCaptureFailed, window, nil)
                 incomplete = true
                 capturedImage = nil
             }
             // 截图失败也复核 root，不能在中途切窗后继续发出其他 token。
             guard let after = readState(), validRoot(after) else { return .incomplete }
-            guard candidates(after).contains(window), let capturedImage,
-                  let size = pixelSize(of: capturedImage.data) else {
+            guard candidates(after).contains(window) else {
+                report(.candidateChangedAfterCapture, window,
+                       after.windows.first { $0.windowID == window.windowID })
+                incomplete = true
+                continue
+            }
+            guard let capturedImage, let size = pixelSize(of: capturedImage.data) else {
+                report(capturedImage == nil ? .imageUnavailable : .imageDataInvalid, window, nil)
                 incomplete = true
                 continue
             }
@@ -201,6 +210,10 @@ struct HoverPopupObservation {
             observation.permitsInput = inputEligible
             observation.permitsBackgroundInput = allowBackgroundInput
             return observation
+        }
+        for (window, _) in captured where !current.contains(window) {
+            report(.candidateChangedBeforeReturn, window,
+                   final.windows.first { $0.windowID == window.windowID })
         }
         return HoverPopupCaptureResult(popups: popups, isIncomplete: incomplete || popups.count != captured.count)
     }
