@@ -93,17 +93,25 @@ final class LivePreviewView: NSView {
     }
 
     override func mouseExited(with _: NSEvent) {
+        controls.updatePointerPresence(false)
         if resizeGesture == nil { clearHoverCursor() }
     }
 
     private func updateHoverCursor(with event: NSEvent) {
         guard let window, window.isVisible, !window.ignoresMouseEvents else {
+            controls.updatePointerPresence(false)
             clearHoverCursor()
             return
         }
         let point = convert(event.locationInWindow, from: nil)
-        guard bounds.contains(point), controls.hitTest(point) == nil else {
+        controls.updatePointerPresence(bounds.contains(point))
+        guard bounds.contains(point) else {
             clearHoverCursor()
+            return
+        }
+        if controls.hitTest(point) != nil {
+            // 按钮上仍保留既有悬停检查，以处理非激活窗口延迟的退出事件。
+            setHoverCursor(.arrow)
             return
         }
         let edge = LivePreviewResizeEdge.hit(at: convert(event.locationInWindow, from: nil), in: bounds)
@@ -136,25 +144,27 @@ final class LivePreviewView: NSView {
     }
 
     private func refreshHoverCursor() {
-        guard let window, window.isVisible, !window.ignoresMouseEvents,
-              let hoverCursor, cursorAccess.isActive
-        else {
+        guard let window, window.isVisible, !window.ignoresMouseEvents else {
+            controls.updatePointerPresence(false)
             clearHoverCursor()
             return
         }
         let point = NSEvent.mouseLocation
+        let local = convert(window.convertPoint(fromScreen: point), from: nil)
+        let isInside = NSWindow.windowNumber(at: point, belowWindowWithWindowNumber: 0) == window.windowNumber
+            && bounds.contains(local)
+        controls.updatePointerPresence(isInside)
         // 不覆盖其他窗口、菜单或鼠标已离开后的光标；拖拽时允许越过边界。
         if resizeGesture == nil {
-            guard NSWindow.windowNumber(at: point, belowWindowWithWindowNumber: 0) == window.windowNumber,
-                  bounds.contains(convert(window.convertPoint(fromScreen: point), from: nil)),
-                  controls.hitTest(convert(window.convertPoint(fromScreen: point), from: nil)) == nil
-            else {
+            guard isInside else {
                 clearHoverCursor()
                 return
             }
         }
+        // 控件显隐不依赖私有后台光标能力，符号不可用时仍正常显示。
+        guard let hoverCursor, cursorAccess.isActive else { return }
         NSCursor.arrow.set()
-        hoverCursor.set()
+        (resizeGesture == nil && controls.hitTest(local) != nil ? NSCursor.arrow : hoverCursor).set()
     }
 
     override func viewWillMove(toWindow newWindow: NSWindow?) {
@@ -217,6 +227,7 @@ final class LivePreviewView: NSView {
     }
 
     func cancelInteraction() {
+        controls.updatePointerPresence(false)
         clearHoverCursor()
         guard let panel = window as? LivePreviewPanel, panel.userInteractionActive else { return }
         finishInteraction(panel)

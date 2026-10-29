@@ -3,17 +3,16 @@ import AppKit
 /// 控件跟随主窗画面，不把合成画布的透明空白当作标题栏。
 @MainActor
 final class LivePreviewControls: NSView {
-    let hideButton = NSButton()
+    let hideButton = LivePreviewHideButton()
+    private var pointerInside = false
     var rootUnitRect = CGRect(x: 0, y: 0, width: 1, height: 1) {
         didSet { if oldValue != rootUnitRect { needsLayout = true } }
     }
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
-        hideButton.image = NSImage(systemSymbolName: "xmark", accessibilityDescription: nil)
-        hideButton.imageScaling = .scaleProportionallyDown
-        hideButton.bezelStyle = .circular
-        hideButton.isBordered = true
+        hideButton.isBordered = false
+        hideButton.isHidden = true
         hideButton.title = ""
         hideButton.target = self
         hideButton.action = #selector(hidePreview)
@@ -25,6 +24,15 @@ final class LivePreviewControls: NSView {
     @available(*, unavailable)
     required init?(coder _: NSCoder) {
         nil
+    }
+
+    func updatePointerPresence(_ inside: Bool) {
+        pointerInside = inside && window?.ignoresMouseEvents != true
+        updateVisibility()
+    }
+
+    private func updateVisibility() {
+        hideButton.isHidden = !pointerInside || min(hideButton.frame.width, hideButton.frame.height) < 12
     }
 
     func anchor(root: CGRect, canvas: CGRect) {
@@ -43,12 +51,12 @@ final class LivePreviewControls: NSView {
                           y: bounds.minY + rootUnitRect.minY * bounds.height,
                           width: rootUnitRect.width * bounds.width, height: rootUnitRect.height * bounds.height)
         // 窄画面缩小内边距；仍把按钮完整放在画面内，避免丢失收起入口。
-        let side = max(0, min(24, root.width - 4, root.height - 4))
+        let side = max(0, min(28, root.width - 4, root.height - 4))
         let insetX = min(10, (root.width - side) / 2)
         let insetY = min(10, (root.height - side) / 2)
-        hideButton.isHidden = side < 12
         hideButton.frame = CGRect(x: root.minX + insetX, y: root.maxY - insetY - side,
                                   width: side, height: side)
+        updateVisibility()
     }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
@@ -59,7 +67,37 @@ final class LivePreviewControls: NSView {
     }
 
     @objc private func hidePreview() {
-        guard window?.ignoresMouseEvents != true else { return }
+        guard window?.ignoresMouseEvents != true, !hideButton.isHidden else { return }
         (window as? LivePreviewPanel)?.performClose(nil)
+    }
+}
+
+/// 固定深色底衬和白色符号，避免被源窗口的浅色标题栏吞没。
+@MainActor
+final class LivePreviewHideButton: NSButton {
+    override func draw(_: NSRect) {
+        let circle = NSBezierPath(ovalIn: bounds.insetBy(dx: 2, dy: 2))
+        NSGraphicsContext.saveGraphicsState()
+        let shadow = NSShadow()
+        shadow.shadowColor = NSColor.black.withAlphaComponent(0.3)
+        shadow.shadowBlurRadius = 3
+        shadow.shadowOffset = CGSize(width: 0, height: -1)
+        shadow.set()
+        NSColor(calibratedWhite: isHighlighted ? 0.3 : 0.12, alpha: 0.94).setFill()
+        circle.fill()
+        NSGraphicsContext.restoreGraphicsState()
+        NSColor.white.withAlphaComponent(0.45).setStroke()
+        circle.lineWidth = 1
+        circle.stroke()
+        let radius = min(4, bounds.width / 6)
+        let cross = NSBezierPath()
+        cross.move(to: CGPoint(x: bounds.midX - radius, y: bounds.midY - radius))
+        cross.line(to: CGPoint(x: bounds.midX + radius, y: bounds.midY + radius))
+        cross.move(to: CGPoint(x: bounds.midX - radius, y: bounds.midY + radius))
+        cross.line(to: CGPoint(x: bounds.midX + radius, y: bounds.midY - radius))
+        cross.lineWidth = 1.8
+        cross.lineCapStyle = .round
+        NSColor.white.setStroke()
+        cross.stroke()
     }
 }
