@@ -9,6 +9,41 @@ final class PopupCaptureDiagnosticTests: XCTestCase {
     private let root = Window(windowID: 10, pid: 123, bounds: CGRect(x: 0, y: 0, width: 600, height: 400))
     private let popup = Window(windowID: 11, pid: 123, bounds: CGRect(x: 50, y: 50, width: 100, height: 100))
 
+    func testRootEvidenceDistinguishesMissingRejectedAndInvisibleRecordsWithoutPrivateContents() {
+        let info: [String: Any] = [
+            kCGWindowNumber as String: NSNumber(value: root.windowID),
+            kCGWindowOwnerPID as String: NSNumber(value: root.pid),
+            kCGWindowBounds as String: root.bounds.dictionaryRepresentation,
+            kCGWindowAlpha as String: NSNumber(value: 1.0),
+            kCGWindowLayer as String: NSNumber(value: 0),
+            kCGWindowIsOnscreen as String: kCFBooleanTrue as Any,
+            kCGWindowName as String: "PRIVATE_TITLE_SENTINEL"
+        ]
+        func evidence(_ records: [[String: Any]]) -> String {
+            let result = HoverPopupDiagnostics.rootWindowEvidence(rootID: root.windowID, info: records)
+            XCTAssertFalse(result.contains("PRIVATE"))
+            return result
+        }
+        XCTAssertEqual(evidence([]), "stage=recordMissing recordCount=0")
+        XCTAssertTrue(evidence([info]).contains("stage=visible"))
+        var changed = info
+        changed[kCGWindowAlpha as String] = NSNumber(value: 0)
+        XCTAssertTrue(evidence([changed]).contains("stage=notVisible"))
+        XCTAssertTrue(evidence([changed]).contains("alpha=number:0.0"))
+        changed = info
+        changed.removeValue(forKey: kCGWindowIsOnscreen as String)
+        XCTAssertTrue(evidence([changed]).contains("stage=recordRejected"))
+        XCTAssertTrue(evidence([changed]).contains("onscreen=missing"))
+        changed[kCGWindowAlpha as String] = "PRIVATE_INVALID_SENTINEL"
+        XCTAssertTrue(evidence([changed]).contains("alpha=unsupported"))
+        changed = info
+        changed[kCGWindowIsOnscreen as String] = NSNumber(value: 2)
+        XCTAssertTrue(evidence([changed]).contains("onscreen=number:2.0"))
+        XCTAssertTrue(evidence([changed]).contains("stage=recordRejected"))
+        changed[kCGWindowNumber as String] = NSNumber(value: popup.windowID)
+        XCTAssertEqual(evidence([changed]), "stage=recordMissing recordCount=1")
+    }
+
     private func image() throws -> Observation.CapturedImage {
         let context = try XCTUnwrap(CGContext(
             data: nil, width: 10, height: 10, bitsPerComponent: 8, bytesPerRow: 0,

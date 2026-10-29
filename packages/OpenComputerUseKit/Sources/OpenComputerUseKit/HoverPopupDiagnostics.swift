@@ -42,4 +42,34 @@ enum HoverPopupDiagnostics {
         expected=\(String(describing: expected), privacy: .public) observed=\(actual, privacy: .public)
         """)
     }
+
+    static func recordRootWindowInfo(rootID: CGWindowID, pid: pid_t, bounds: CGRect, info: [[String: Any]]) {
+        let evidence = rootWindowEvidence(rootID: rootID, info: info)
+        logger.notice("""
+        popup_root_window_evidence id=\(rootID, privacy: .public) pid=\(pid, privacy: .public) \
+        expectedBounds=\(String(describing: bounds), privacy: .public) \(evidence, privacy: .public)
+        """)
+    }
+
+    /// 只解释同一次 CG 枚举里的根窗口记录；未知类型不输出其内容。
+    static func rootWindowEvidence(rootID: CGWindowID, info: [[String: Any]]) -> String {
+        guard let record = info.first(where: {
+            guard let id = $0[kCGWindowNumber as String] as? NSNumber,
+                  CFGetTypeID(id) != CFBooleanGetTypeID() else { return false }
+            return id.doubleValue == Double(rootID)
+        }) else { return "stage=recordMissing recordCount=\(info.count)" }
+        let parsed = HoverPopupObservation.windowInfo(record)
+        let stage = parsed == nil ? "recordRejected" : (parsed?.isVisible == true ? "visible" : "notVisible")
+        func number(_ key: CFString) -> String {
+            guard let value = record[key as String] else { return "missing" }
+            guard let value = value as? NSNumber else { return "unsupported" }
+            let kind = CFGetTypeID(value) == CFBooleanGetTypeID() ? "bool" : "number"
+            return "\(kind):\(value.doubleValue)"
+        }
+        let bounds = (record[kCGWindowBounds as String] as? NSDictionary)
+            .flatMap { CGRect(dictionaryRepresentation: $0) }
+        return "stage=\(stage) recordCount=\(info.count) pid=\(number(kCGWindowOwnerPID)) "
+            + "alpha=\(number(kCGWindowAlpha)) onscreen=\(number(kCGWindowIsOnscreen)) "
+            + "layer=\(number(kCGWindowLayer)) bounds=\(bounds.map { String(describing: $0) } ?? "invalid")"
+    }
 }

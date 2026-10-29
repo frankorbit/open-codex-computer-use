@@ -60,7 +60,11 @@ struct HoverPopupSystemCapture {
                 }
                 guard let info = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID)
                     as? [[String: Any]] else { return nil }
-                return info.compactMap(Observation.windowInfo)
+                let windows = info.compactMap(Observation.windowInfo)
+                if windows.first(where: { $0.windowID == rootID })?.isVisible != true {
+                    HoverPopupDiagnostics.recordRootWindowInfo(rootID: rootID, pid: pid, bounds: rootBounds, info: info)
+                }
+                return windows
             },
             readAX: { readAXState() },
             captureImage: { window in
