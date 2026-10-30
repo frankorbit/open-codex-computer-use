@@ -157,7 +157,8 @@ struct HoverPopupSystemCapture {
         // 后台授权不依赖前台窗口；兼容模式查询也受同一 AX/总预算约束。
         var foreground = false
         if settings.allowInput, NSWorkspace.shared.frontmostApplication?.processIdentifier == pid,
-           let focused = attribute(app, kAXFocusedWindowAttribute) {
+           let focused = attribute(app, kAXFocusedWindowAttribute)
+        {
             foreground = CFEqual(focused, root)
                 && NSWorkspace.shared.frontmostApplication?.processIdentifier == pid
         }
@@ -230,11 +231,16 @@ struct HoverPopupSystemCapture {
     }
 
     private func attribute(_ element: AXUIElement, _ name: String) -> CFTypeRef? {
-        guard prepare(element) else { return nil }
-        var value: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(element, name as CFString, &value) == .success,
-              !budget.expired else { return nil }
-        return value
+        HoverPopupAXRead.read(
+            prepare: { prepare(element) },
+            copy: { AXUIElementCopyAttributeValue(element, name as CFString, &$0) },
+            expired: { budget.expired },
+            report: {
+                HoverPopupDiagnostics.recordAXRead(
+                    $0, attribute: name, pid: pid, rootID: rootID, remaining: budget.remaining
+                )
+            }
+        )
     }
 
     private func frame(_ element: AXUIElement) -> CGRect? {

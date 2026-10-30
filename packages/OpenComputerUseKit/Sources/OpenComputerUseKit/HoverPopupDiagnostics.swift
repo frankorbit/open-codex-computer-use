@@ -19,6 +19,27 @@ enum HoverPopupDiagnostics {
         logger.notice("popup_observation_incomplete reason=\(reason.rawValue, privacy: .public)")
     }
 
+    static func recordAXRead(
+        _ failure: HoverPopupAXRead.Failure, attribute: String, pid: pid_t,
+        rootID: CGWindowID, remaining: TimeInterval
+    ) {
+        let stage: String
+        let code: Int32
+        switch failure {
+        case .prepareFailed: stage = "prepareFailed"; code = 0
+        case let .copyFailed(error): stage = "copyFailed"; code = error
+        case .deadlineExpired: stage = "deadlineExpired"; code = 0
+        }
+        // 属性名只取固定白名单，不输出 AX 值、标题或正文。
+        let allowed = ["AXWindows", "AXMainWindow", "AXFocusedWindow", "AXPosition", "AXSize"]
+        let name = allowed.contains(attribute) ? attribute : "other"
+        logger.notice("""
+        popup_ax_read_failed stage=\(stage, privacy: .public) code=\(code, privacy: .public) \
+        attribute=\(name, privacy: .public) pid=\(pid, privacy: .public) root=\(rootID, privacy: .public) \
+        remaining_ms=\(remaining * 1000, privacy: .public)
+        """)
+    }
+
     /// 只复用本轮已有窗口元数据，不重新查询、不记录标题或图片。
     static func recordCandidate(
         _ reason: Reason, expected: HoverPopupObservation.Window?, observed: HoverPopupObservation.Window?
