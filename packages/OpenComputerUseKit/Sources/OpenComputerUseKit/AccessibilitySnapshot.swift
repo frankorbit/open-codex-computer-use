@@ -239,6 +239,7 @@ enum SnapshotBuilder {
 
         var rootWindow: AXUIElement
         guard let resolvedFocusedWindow = focusedWindow else {
+            WindowSelectionDiagnostics.record(.focusedWindowUnavailable, pid: app.pid)
             throw ComputerUseError.stateUnavailable(computerUseNoWindowFoundMessage)
         }
         rootWindow = resolvedFocusedWindow
@@ -265,6 +266,7 @@ enum SnapshotBuilder {
         }
 
         guard let windowCapture else {
+            WindowSelectionDiagnostics.record(.captureUnavailable, pid: app.pid)
             throw ComputerUseError.stateUnavailable(computerUseNoWindowFoundMessage)
         }
 
@@ -1383,9 +1385,9 @@ private func valueTypeTrait(of element: AXUIElement) -> String? {
 }
 
 private func copyElement(_ element: AXUIElement, attribute: String) -> AXUIElement? {
-    var value: CFTypeRef?
-    let error = AXUIElementCopyAttributeValue(element, attribute as CFString, &value)
-    guard error == .success, let value else {
+    guard let value = WindowSelectionDiagnostics.read(attribute: attribute, copy: {
+        AXUIElementCopyAttributeValue(element, attribute as CFString, &$0)
+    }) else {
         return nil
     }
 
@@ -1393,9 +1395,9 @@ private func copyElement(_ element: AXUIElement, attribute: String) -> AXUIEleme
 }
 
 private func copyArray(_ element: AXUIElement, attribute: String) -> [AXUIElement]? {
-    var value: CFTypeRef?
-    let error = AXUIElementCopyAttributeValue(element, attribute as CFString, &value)
-    guard error == .success, let value else {
+    guard let value = WindowSelectionDiagnostics.read(attribute: attribute, copy: {
+        AXUIElementCopyAttributeValue(element, attribute as CFString, &$0)
+    }) else {
         return nil
     }
 
