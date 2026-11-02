@@ -16,6 +16,7 @@ final class ElementRecord {
     let rawActions: [String]
     let prettyActions: [String]
     let isSyntheticText: Bool
+    let selectionState: TargetedSelectionState
 
     init(
         index: Int,
@@ -28,7 +29,8 @@ final class ElementRecord {
         help: String? = nil,
         rawActions: [String],
         prettyActions: [String],
-        isSyntheticText: Bool = false
+        isSyntheticText: Bool = false,
+        selectionState: TargetedSelectionState = .init()
     ) {
         self.index = index
         self.identifier = identifier
@@ -41,6 +43,7 @@ final class ElementRecord {
         self.rawActions = rawActions
         self.prettyActions = prettyActions
         self.isSyntheticText = isSyntheticText
+        self.selectionState = selectionState
     }
 }
 
@@ -2604,6 +2607,8 @@ extension SnapshotBuilder {
         kAXPositionAttribute as String,
         kAXSizeAttribute as String,
         kAXHelpAttribute as String,
+        kAXSelectedAttribute as String,
+        kAXMenuItemMarkCharAttribute as String,
     ]
 
     /// Use one bounded traversal so every app has the same visibility and match rules.
@@ -2683,6 +2688,7 @@ extension SnapshotBuilder {
         let identifier: String?
         let help: String?
         let globalFrame: CGRect?
+        let selectionState: TargetedSelectionState
     }
 
     /// Read the scan attributes in a single `AXUIElementCopyMultipleAttributeValues`
@@ -2708,7 +2714,8 @@ extension SnapshotBuilder {
         func str(_ i: Int) -> String? { (raw[i] as? String).map { String($0.prefix(1001)) } }
         return NodeScan(
             role: str(0), title: str(1), description: str(2), value: str(3), identifier: str(4), help: str(7),
-            globalFrame: axFrame(position: raw[5], size: raw[6])
+            globalFrame: axFrame(position: raw[5], size: raw[6]),
+            selectionState: TargetedSelectionState(selected: raw[8], markCharacter: raw[9])
         )
     }
 
@@ -2748,7 +2755,8 @@ extension SnapshotBuilder {
             value: scan.value.map { String($0.prefix(1000)) },
             help: scan.help.map { String($0.prefix(1000)) },
             rawActions: rawActions,
-            prettyActions: scan.role.map { meaningfulActions(rawActions, role: $0) } ?? rawActions
+            prettyActions: scan.role.map { meaningfulActions(rawActions, role: $0) } ?? rawActions,
+            selectionState: scan.selectionState
         )
     }
 

@@ -1453,7 +1453,8 @@ public final class ComputerUseService {
         _ = targetedElements.insert(app: TargetedAppIdentity(app: context.app)) { index in
             record = ElementRecord(index: index, identifier: source.identifier, element: source.element,
                                    localFrame: source.localFrame, role: source.role, title: source.title, value: source.value, help: source.help,
-                                   rawActions: source.rawActions, prettyActions: source.prettyActions, isSyntheticText: source.isSyntheticText)
+                                   rawActions: source.rawActions, prettyActions: source.prettyActions, isSyntheticText: source.isSyntheticText,
+                                   selectionState: source.selectionState)
             return TargetedElement(record: record, context: context, criteria: criteria)
         }
         return compactRecordDictionary(record)
@@ -1470,6 +1471,7 @@ public final class ComputerUseService {
             dict["bounds"] = ["x": frame.origin.x, "y": frame.origin.y, "w": frame.size.width, "h": frame.size.height]
         }
         if !record.prettyActions.isEmpty { dict["actions"] = record.prettyActions }
+        record.selectionState.append(to: &dict)
         return dict
     }
 
