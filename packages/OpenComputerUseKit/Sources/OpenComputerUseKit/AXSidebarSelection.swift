@@ -10,14 +10,15 @@ struct AXSidebarSelectionReader<Element> {
 }
 
 /// 调用方仅传入原始左键单击、非 Web 目标；不沿标签或后代候选推断行点击意图。
-func selectFinderSidebarRow<Element>(
+func selectNativeSidebarRow<Element>(
     _ row: Element,
     bundleIdentifier: String?,
+    filePanel: Bool = false,
     reader: AXSidebarSelectionReader<Element>,
     prepare: (Element) throws -> Void,
     select: (Element, [Element]) -> AXError
 ) throws -> Bool {
-    guard bundleIdentifier == "com.apple.finder",
+    guard bundleIdentifier == "com.apple.finder" || filePanel,
           try reader.role(row) == kAXRowRole as String,
           let outline = try reader.parent(row),
           try reader.role(outline) == kAXOutlineRole as String,
@@ -37,7 +38,7 @@ func selectFinderSidebarRow<Element>(
     if rowError == .attributeUnsupported { return false }
     guard rowError == .success else {
         throw ComputerUseError.stateUnavailable(
-            "Finder sidebar row selection capability failed (AX \(rowError.rawValue)); "
+            "Native sidebar row selection capability failed (AX \(rowError.rawValue)); "
                 + "no further input was sent; do not replay the previous action"
         )
     }
@@ -56,7 +57,7 @@ func selectFinderSidebarRow<Element>(
     // 已确认是可选择的侧栏行，不能因容器能力缺失而改成打开或鼠标输入。
     guard outlineError == .success, outlineSettable else {
         throw ComputerUseError.stateUnavailable(
-            "Finder sidebar AXSelectedRows is unavailable (AX \(outlineError.rawValue)); "
+            "Native sidebar AXSelectedRows is unavailable (AX \(outlineError.rawValue)); "
                 + "no further input was sent; do not replay the previous action"
         )
     }

@@ -22,7 +22,10 @@ final class FinderSidebarClickServiceTests: XCTestCase {
         super.tearDown()
     }
 
-    private func state() throws -> AppSnapshot {
+    private func state(
+        bundleIdentifier: String = "com.apple.finder", panelRole: String? = nil,
+        panelIdentifier: String? = nil, rowRole: String = kAXRowRole
+    ) throws -> AppSnapshot {
         let bitmap = try XCTUnwrap(NSBitmapImageRep(
             bitmapDataPlanes: nil, pixelsWide: 100, pixelsHigh: 100, bitsPerSample: 8,
             samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB,
@@ -30,19 +33,27 @@ final class FinderSidebarClickServiceTests: XCTestCase {
         ))
         let png = try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
         let app = RunningAppDescriptor(
-            name: "Finder", bundleIdentifier: "com.apple.finder", pid: getpid(), runningApplication: .current
+            name: "Test", bundleIdentifier: bundleIdentifier, pid: getpid(), runningApplication: .current
         )
         // 无效 AX 对象不能发送真实 GUI 输入；若选择路径错误落入 Open，入口必须报错。
         let row = ElementRecord(
             index: 8, identifier: nil, element: AXUIElementCreateApplication(-1),
-            localFrame: CGRect(x: 10, y: 10, width: 60, height: 20), role: kAXRowRole,
+            localFrame: CGRect(x: 10, y: 10, width: 60, height: 20), role: rowRole,
             rawActions: ["AXOpen"], prettyActions: []
         )
+        var elements = [8: row]
+        if let panelRole {
+            elements[0] = ElementRecord(
+                index: 0, identifier: panelIdentifier, element: AXUIElementCreateApplication(-2),
+                localFrame: CGRect(x: 0, y: 0, width: 100, height: 100), role: panelRole,
+                rawActions: [], prettyActions: []
+            )
+        }
         return AppSnapshot(
             app: app, windowTitle: nil, windowBounds: CGRect(x: 0, y: 0, width: 100, height: 100),
             targetWindowID: nil, targetWindowLayer: nil, screenshotData: png, mode: .accessibility,
             treeLines: [], focusedSummary: nil, focusedElement: nil, selectedText: nil, windowElement: nil,
-            elements: [8: row]
+            elements: elements
         )
     }
 
@@ -83,6 +94,81 @@ final class FinderSidebarClickServiceTests: XCTestCase {
                 XCTAssertTrue(String(describing: error).contains("selection attempted; test stop"))
             }
             XCTAssertEqual(sends, 1)
+        }
+    }
+}
+
+extension FinderSidebarClickServiceTests {
+    func testFilePanelActualClickEntrySelectsOnceAndStopsOnError() throws {
+        for method in [ClickMethod.auto, .accessibility] {
+            for panel in [("AXSheet", "save-panel"), ("AXWindow", "open-panel")] {
+                for fails in [false, true] {
+                    var sends = 0
+                    let snapshot = try state(
+                        bundleIdentifier: "com.apple.TextEdit", panelRole: panel.0, panelIdentifier: panel.1
+                    )
+                    let service = ComputerUseService(
+                        snapshots: ["com.apple.TextEdit": snapshot], snapshotDependencies: .live,
+                        sidebarSelectionBackend: { _, _ in
+                            sends += 1
+                            if fails { throw ComputerUseError.message("selection attempted; test stop") }
+                            return true
+                        }
+                    )
+                    let operation = {
+                        try service.click(app: "com.apple.TextEdit", elementIndex: "8", x: nil, y: nil,
+                                          clickCount: 1, mouseButton: "left", clickMethod: method)
+                    }
+                    if fails {
+                        XCTAssertThrowsError(try operation()) { error in
+                            XCTAssertTrue(error.localizedDescription.contains("selection attempted; test stop"))
+                        }
+                    } else { _ = try operation() }
+                    XCTAssertEqual(sends, 1)
+                }
+            }
+        }
+    }
+
+    func testNonPanelAndNonSingleRowClicksDoNotEnterNewRoute() throws {
+        struct Case {
+            let panelRole: String?
+            let identifier: String?
+            let rowRole: String
+            let count: Int
+            let button: String
+
+            init(_ role: String?, _ identifier: String?, _ row: String, _ count: Int, _ button: String) {
+                panelRole = role
+                self.identifier = identifier
+                rowRole = row
+                self.count = count
+                self.button = button
+            }
+        }
+        let cases: [Case] = [
+            .init(nil, nil, "AXRow", 1, "left"),
+            .init("AXWindow", "document", "AXRow", 1, "left"),
+            .init("AXGroup", "save-panel", "AXRow", 1, "left"),
+            .init("AXSheet", "save-panel", "AXCell", 1, "left"),
+            .init("AXSheet", "save-panel", "AXTextField", 1, "left"),
+            .init("AXSheet", "save-panel", "AXRow", 2, "left"),
+            .init("AXSheet", "save-panel", "AXRow", 1, "right")
+        ]
+        for testCase in cases {
+            var selections = 0
+            let snapshot = try state(bundleIdentifier: "com.apple.TextEdit", panelRole: testCase.panelRole,
+                                     panelIdentifier: testCase.identifier, rowRole: testCase.rowRole)
+            let service = ComputerUseService(
+                snapshots: ["com.apple.TextEdit": snapshot], snapshotDependencies: .live,
+                sidebarSelectionBackend: { _, _ in selections += 1; return true }
+            )
+            // 无效句柄使原有路径安全失败；不能实际发送 GUI 输入。
+            XCTAssertThrowsError(try service.click(
+                app: "com.apple.TextEdit", elementIndex: "8", x: nil, y: nil,
+                clickCount: testCase.count, mouseButton: testCase.button, clickMethod: .accessibility
+            ))
+            XCTAssertEqual(selections, 0)
         }
     }
 }

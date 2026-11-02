@@ -40,11 +40,12 @@ final class AXSidebarSelectionTests: XCTestCase {
         func run(
             target: Node? = nil,
             bundleIdentifier: String? = "com.apple.finder",
+            filePanel: Bool = false,
             reader: AXSidebarSelectionReader<Node>? = nil,
             prepare: ((Node) throws -> Void)? = nil
         ) throws -> Bool {
-            try selectFinderSidebarRow(
-                target ?? row, bundleIdentifier: bundleIdentifier, reader: reader ?? self.reader,
+            try selectNativeSidebarRow(
+                target ?? row, bundleIdentifier: bundleIdentifier, filePanel: filePanel, reader: reader ?? self.reader,
                 prepare: { element in
                     self.prepared.append(element)
                     try prepare?(element)
@@ -294,6 +295,55 @@ extension AXSidebarSelectionTests {
                     XCTAssertTrue(harness.submissions.isEmpty)
                 }
             }
+        }
+    }
+}
+
+extension AXSidebarSelectionTests {
+    func testFilePanelUsesSameSelectionContractOutsideFinder() throws {
+        for bundle in [nil, "com.apple.TextEdit", "com.apple.iWork.Numbers"] {
+            let harness = Harness()
+            XCTAssertTrue(try harness.run(bundleIdentifier: bundle, filePanel: true))
+            XCTAssertEqual(harness.capabilities.map(\.1), ["AXSelected", "AXSelectedRows"])
+            XCTAssertEqual(harness.submissions.count, 1)
+        }
+    }
+
+    func testFilePanelCapabilityAndPreflightErrorsNeverSubmit() {
+        for isRow in [true, false] {
+            for error in failures where !isRow || error != .attributeUnsupported {
+                let harness = Harness()
+                if isRow {
+                    harness.rowCapability = (error, true)
+                } else {
+                    harness.outlineCapability = (error, true)
+                }
+                XCTAssertThrowsError(try harness.run(filePanel: true)) { thrown in
+                    if error == .apiDisabled {
+                        guard case ComputerUseError.permissionDenied = thrown else {
+                            return XCTFail("权限错误必须保留分类")
+                        }
+                    }
+                }
+                XCTAssertTrue(harness.submissions.isEmpty)
+            }
+        }
+        let rejections: [Error] = [CancellationError(), ComputerUseError.permissionDenied("permission"),
+                                   axInputPreflightFailure("deadline")]
+        for rejection in rejections {
+            let harness = Harness()
+            XCTAssertThrowsError(try harness.run(bundleIdentifier: "com.apple.TextEdit", filePanel: true,
+                                                 prepare: { _ in throw rejection }))
+            XCTAssertTrue(harness.submissions.isEmpty)
+        }
+    }
+
+    func testFilePanelSelectionErrorIsNotNavigationSuccessOrPermissionToReplay() {
+        for error in failures {
+            let harness = Harness()
+            harness.setterResult = error
+            XCTAssertThrowsError(try harness.run(bundleIdentifier: "com.apple.TextEdit", filePanel: true))
+            XCTAssertEqual(harness.submissions.count, 1)
         }
     }
 }

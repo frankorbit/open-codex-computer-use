@@ -291,6 +291,6 @@ JS 的 click / pressKey / typeText 在 native 请求前拒绝未知 options 字�
 
 单次入口的失败诊断区分策略、目标校验、激活、接收窗口校验及 HID 投递阶段。错误结果与原生日志输出稳定阶段码、白名单错误类别，以及 activation/input may-have-occurred 标记；不转发任意错误正文。进入投递阶段后保守报告未知效果，之前的失败明确没有 HID 输入，但激活阶段及之后仍可能改变前台。所有失败均要求重新观察，不自动重放。
 
-### Finder 侧栏选择边界
+### Finder 与系统文件面板侧栏选择边界
 
-元素索引点击仅在 Finder、原始目标为 sidebar outline 的行、左键单击且非网页时，先使用 AXSelectedRows 选择行。发送前验证行选择能力、容器能力、父链和绑定窗口；失败保留权限或未知错误，不继续 AXOpen、鼠标或其他候选。其他应用、普通 outline、后代控件、双击与右键不适用。选择成功仍需后续观察确认目录，不代表业务完成。
+元素索引点击仅在 Finder 或明确识别的系统文件面板（AXWindow/AXSheet，identifier 为 open-panel/save-panel）、原始目标为 sidebar outline 的行、左键单击且非网页时，先使用 AXSelectedRows 选择行。发送前验证行选择能力与容器能力；文件面板还实时复查面板身份、可见性、同进程父链、每级挂接关系及绑定窗口。失败保留权限或未知错误，不继续 AXOpen、鼠标或其他候选。无文件面板的其他应用、普通 outline、后代控件、双击与右键不适用。选择成功仍需后续观察确认目录，不代表业务完成。
