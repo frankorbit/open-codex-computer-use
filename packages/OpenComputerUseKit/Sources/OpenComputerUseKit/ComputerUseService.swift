@@ -520,6 +520,7 @@ public final class ComputerUseService {
     private var sidebarSelectionBackend: ((AXUIElement, AppSnapshot) throws -> Bool)?
     private var axActionBackend: ((AXUIElement, String) -> AXError)?
     private var descendantCandidatesBackend: ((AXUIElement) -> [ElementRecord])?
+    private var menuBarFocusBackend: AXMenuBarFocusBackend = .live
 
     public init(allowsForegroundClickOnce: Bool = false) {
         self.allowsForegroundClickOnce = allowsForegroundClickOnce
@@ -538,7 +539,8 @@ public final class ComputerUseService {
         allowsForegroundClickOnce: Bool = false,
         sidebarSelectionBackend: ((AXUIElement, AppSnapshot) throws -> Bool)? = nil,
         axActionBackend: ((AXUIElement, String) -> AXError)? = nil,
-        descendantCandidatesBackend: ((AXUIElement) -> [ElementRecord])? = nil
+        descendantCandidatesBackend: ((AXUIElement) -> [ElementRecord])? = nil,
+        menuBarFocusBackend: AXMenuBarFocusBackend = .live
     ) {
         self.allowsForegroundClickOnce = allowsForegroundClickOnce
         snapshotCache = AppSnapshotCache(snapshots: snapshots, bindingIdentity: snapshotDependencies.bindingIdentity)
@@ -547,6 +549,7 @@ public final class ComputerUseService {
         self.sidebarSelectionBackend = sidebarSelectionBackend
         self.axActionBackend = axActionBackend
         self.descendantCandidatesBackend = descendantCandidatesBackend
+        self.menuBarFocusBackend = menuBarFocusBackend
     }
 
     init(snapshots: [String: AppSnapshot], keyboardInputBackend: KeyboardInputBackend) {
@@ -1898,6 +1901,19 @@ public final class ComputerUseService {
         includeNearbyHitTesting: Bool,
         allowActivationFallback: Bool
     ) throws -> Bool {
+        if AXMenuBarFocus.applies(record: record, snapshot: snapshot, button: button,
+                                  clickCount: clickCount, foregroundPID: menuBarFocusBackend.foregroundPID()),
+           menuBarFocusBackend.isAvailable(),
+           let element = record.element {
+            try AXMenuBarFocus.dispatch(record: record, snapshot: snapshot, backend: menuBarFocusBackend) {
+                guard try self.performAction(
+                    named: kAXPressAction as String, on: element, availableActions: record.rawActions,
+                    diagnostics: .init(source: .original, role: record.role, originalIndex: record.index)
+                ) else { throw axInputPreflightFailure("Menu opener no longer supports AXPress") }
+            }
+            pauseBeforeReadBack(0.15)
+            return true
+        }
         // 仅原始 Finder／系统文件面板侧栏行采用选择语义，不改变后代控件和普通 outline。
         let hasFilePanel = snapshot.elements.values.contains {
             isNativeFilePanel(role: $0.role, identifier: $0.identifier) && $0.element != nil

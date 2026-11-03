@@ -86,6 +86,45 @@ final class SkyClickMenuFocusTests: XCTestCase {
         }
     }
 
+    func testAXMenuBarPreparationSharesBoundedLeaseAndCleansFailureWithoutReplay() throws {
+        for fails in [false, true] {
+            let harness = Harness()
+            let focus = SkyClickMenuFocus(backend: harness.backend)
+            defer { focus.cancelAfterFailure() }
+            let record = escapeTestRecord(1, role: "AXMenuBarItem")
+            let snapshot = escapeTestSnapshot(records: [record])
+            var validations = 0
+            var sends = 0
+            let backend = AXMenuBarFocusBackend(foregroundPID: { 99 }, validate: { _, _ in
+                validations += 1
+            }, prepare: { _, submit in
+                try focus.deliver(target: self.target(), profile: .standard, button: .left,
+                                  clickCount: 1, submit: submit)
+            })
+            let operation = {
+                try AXMenuBarFocus.dispatch(record: record, snapshot: snapshot, backend: backend) {
+                    XCTAssertGreaterThanOrEqual(harness.now, harness.keyReadyAt)
+                    XCTAssertEqual(harness.keys, 1)
+                    sends += 1
+                    if fails { throw ComputerUseError.message("effect unknown") }
+                    harness.popups = [20]
+                }
+            }
+            if fails {
+                XCTAssertThrowsError(try operation())
+                XCTAssertEqual(harness.ends, 1)
+            } else {
+                try operation()
+                XCTAssertEqual(harness.ends, 0)
+                harness.now = 31
+                harness.tick()
+                XCTAssertEqual(harness.ends, 1)
+            }
+            XCTAssertEqual(validations, 2)
+            XCTAssertEqual(sends, 1)
+        }
+    }
+
     func testTargetChangeDuringKeyWaitRejectsInputAndAvoidsReusedPIDCleanup() throws {
         for reusedPID in [false, true] {
             let harness = Harness()
