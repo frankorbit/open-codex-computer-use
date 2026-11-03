@@ -117,6 +117,7 @@ struct KeyboardInputBackend {
     var pressKey: (SkyKeyboardTarget, String, () throws -> Void) throws -> Void
 
     var validateWindow: (AppSnapshot) throws -> Void = { try KeyboardReceiver.validateWindow(in: $0) }
+    var validateMenuEscape: (AppSnapshot) throws -> Void = { try KeyboardEscapeGuard.validate(in: $0) }
     var pasteText: Paste = { target, text, route, validate in
         try SkyKeyboardDispatcher.pasteText(target: target, text: text, route: route, validateReceiver: validate)
     }

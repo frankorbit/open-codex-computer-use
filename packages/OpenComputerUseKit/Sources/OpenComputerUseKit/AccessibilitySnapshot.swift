@@ -179,6 +179,15 @@ public struct AppSnapshot {
                     "Summary covers observed nodes only and may be incomplete. " +
                     "Observed selection does not clear input errors or authorize replay."
             )
+            if hasSparseTableObservation(records: elements) {
+                lines.append(
+                    "Sparse table observation: table rows/columns were observed but no AX cell nodes. " +
+                        "This does not prove cells are absent or still loading. For a not-yet-attempted target, " +
+                        "inspect a fresh screenshot and verify its row/column labels before choosing input; " +
+                        "never guess indexes or infer A1 from the first data cell. " +
+                        "This note does not clear errors, timeouts or stop rules and does not authorize replay."
+                )
+            }
         }
         let editorIndexes = elements.values.filter { axEditingScopeRoles.contains($0.role ?? "") }.map(\.index)
             .sorted()
@@ -204,6 +213,13 @@ public struct AppSnapshot {
 
         return lines.joined(separator: "\n")
     }
+}
+
+/// 只陈述当前已渲染节点的缺失，不补读 AX、不伪造可点击单元格，也不推断完整性。
+func hasSparseTableObservation(records: [Int: ElementRecord]) -> Bool {
+    let roles = Set(records.values.compactMap(\.role))
+    return roles.contains(kAXTableRole as String) && roles.contains(kAXColumnRole as String)
+        && roles.contains(kAXRowRole as String) && !roles.contains(kAXCellRole as String)
 }
 
 public enum SnapshotTextStyle {

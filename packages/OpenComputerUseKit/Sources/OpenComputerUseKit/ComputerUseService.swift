@@ -1283,13 +1283,17 @@ public final class ComputerUseService {
         }
 
         let target = try skyKeyTarget(for: snapshot)
-        try keyboardInputBackend.pressKey(target, key, {
+        let guardedEscape = try KeyboardEscapeGuard.isPlainEscape(key)
+        // 在合成焦点准备前拒绝歧义取消；提交前再次检查，不能在准备过程中改落到编辑者。
+        if guardedEscape { try keyboardInputBackend.validateMenuEscape(snapshot) }
+        try keyboardInputBackend.pressKey(target, key) {
             if keyMethod == .skyKey {
                 try keyboardInputBackend.validateWindow(snapshot)
             } else {
                 _ = try keyboardInputBackend.readReceiver(snapshot, false)
             }
-        })
+            if guardedEscape { try keyboardInputBackend.validateMenuEscape(snapshot) }
+        }
         return try actionResult(for: query)
     }
 
