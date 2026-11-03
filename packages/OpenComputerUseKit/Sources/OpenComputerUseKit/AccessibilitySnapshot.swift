@@ -17,6 +17,7 @@ final class ElementRecord {
     let prettyActions: [String]
     let isSyntheticText: Bool
     let selectionState: TargetedSelectionState
+    let renderedDescription: String?
 
     init(
         index: Int,
@@ -30,7 +31,8 @@ final class ElementRecord {
         rawActions: [String],
         prettyActions: [String],
         isSyntheticText: Bool = false,
-        selectionState: TargetedSelectionState = .init()
+        selectionState: TargetedSelectionState = .init(),
+        renderedDescription: String? = nil
     ) {
         self.index = index
         self.identifier = identifier
@@ -44,6 +46,7 @@ final class ElementRecord {
         self.prettyActions = prettyActions
         self.isSyntheticText = isSyntheticText
         self.selectionState = selectionState
+        self.renderedDescription = renderedDescription
     }
 }
 
@@ -168,6 +171,15 @@ public struct AppSnapshot {
         lines.append("App=\(appReference) (pid \(app.pid))")
         lines.append("Window: \(quoted(displayTitle)), App: \(app.name).")
         lines.append(contentsOf: treeLines)
+        if observation.includeAX {
+            lines.append(contentsOf: renderedSelectionSummary(records: elements))
+            lines.append(
+                "Selection evidence: missing selected markers are unknown, not false. " +
+                    "Parent AXSelectedChildren membership is positive evidence; conflicts remain unverified. " +
+                    "Summary covers observed nodes only and may be incomplete. " +
+                    "Observed selection does not clear input errors or authorize replay."
+            )
+        }
         let editorIndexes = elements.values.filter { axEditingScopeRoles.contains($0.role ?? "") }.map(\.index)
             .sorted()
         if !editorIndexes.isEmpty {
@@ -961,12 +973,15 @@ private struct TreeRenderer {
     var identifierIndex: [String: String] = [:]
     var focusedSummary: String?
     private var renderedMenuElements: [AXUIElement] = []
+    private var selectionObservation = AXSelectionObservation<AXUIElement>.live()
 
     init(context: RenderContext) {
         self.context = context
     }
 
-    mutating func render(_ root: AXUIElement, depth: Int = 0, ancestors: [AXUIElement] = []) {
+    mutating func render(
+        _ root: AXUIElement, depth: Int = 0, ancestors: [AXUIElement] = [], selectedByParent: Bool = false
+    ) {
         guard shouldContinueRendering(nextIndex: nextIndex, depth: depth, limits: context.treeLimits) else {
             return
         }
@@ -994,7 +1009,10 @@ private struct TreeRenderer {
             .map { sanitizeText($0, textLimit: context.textLimit) }
         let value = sanitizedValue(of: root, textLimit: context.textLimit)
         let axIdentifier = displayIdentifier(stringValue(of: root, attribute: kAXIdentifierAttribute))
-        let traits = summarizeTraits(of: root)
+        let selection = TargetedSelectionState(
+            selected: attributeValue(of: root, attribute: kAXSelectedAttribute)
+        ).includingParentMembership(selectedByParent)
+        let traits = summarizeTraits(of: root, selection: selection)
         let actions = copyActions(root) ?? []
         let exposesPrimaryClickAction = hasPrimaryClickAction(actions)
         let prettyActions = meaningfulActions(actions, role: role)
@@ -1003,6 +1021,7 @@ private struct TreeRenderer {
         let localFrame = resolveLocalFrame(of: root, windowBounds: context.windowBounds)
         let rowTexts = role == kAXRowRole as String ? flattenedRowTexts(of: root, textLimit: context.textLimit) : []
         let childElements = children(of: root)
+        let selectedChildren = selectionObservation.selectedChildren(of: root, role: role)
         let hasActionableLinkDescendant =
             (role == kAXGroupRole as String || role == kAXUnknownRole as String)
             && exposesPrimaryClickAction
@@ -1080,7 +1099,8 @@ private struct TreeRenderer {
             preservesCompactGenericActionTarget: rendersCompactGenericActionTarget
         ) {
             for child in childElements {
-                render(child, depth: depth, ancestors: nextAncestors)
+                render(child, depth: depth, ancestors: nextAncestors,
+                       selectedByParent: selectedChildren.contains { CFEqual($0, child) })
             }
             return
         }
@@ -1129,7 +1149,8 @@ private struct TreeRenderer {
         let linePrefix = renderedRoleText.isEmpty ? "\(index)" : "\(index) \(renderedRoleText)"
 
         let lineBody = "\(linePrefix)\(traitsSegment)\(titleSegment)\(rowSummarySegment)\(labelSegment)\(helpSegment)\(urlSegment)\(identifierSegment)\(valueSegment)\(placeholderSegment)\(frameSegment)"
-        lines.append("\(String(repeating: "\t", count: depth))\(lineBody)\(actionsSegment)")
+        let selectionEvidence = selection.selectedByParent ? " Selection evidence: parent.AXSelectedChildren" : ""
+        lines.append("\(String(repeating: "\t", count: depth))\(lineBody)\(actionsSegment)\(selectionEvidence)")
 
         let record = ElementRecord(
             index: index,
@@ -1139,7 +1160,9 @@ private struct TreeRenderer {
             role: role,
             help: help,
             rawActions: actions,
-            prettyActions: prettyActions
+            prettyActions: prettyActions,
+            selectionState: selection,
+            renderedDescription: lineBody + actionsSegment + selectionEvidence
         )
         records[index] = record
 
@@ -1153,7 +1176,7 @@ private struct TreeRenderer {
 
         if shouldSummarizeAXRow(
             role: role,
-            selected: role == kAXRowRole as String && boolValue(of: root, attribute: kAXSelectedAttribute) == true,
+            selected: role == kAXRowRole as String && selection.selected == true,
             element: root, focusedPath: context.focusedPath, equal: { CFEqual($0, $1) }
         ) {
             for text in Array(rowTexts.dropFirst()) {
@@ -1175,7 +1198,8 @@ private struct TreeRenderer {
         }
 
         for child in childElements {
-            render(child, depth: depth + 1, ancestors: nextAncestors)
+            render(child, depth: depth + 1, ancestors: nextAncestors,
+                   selectedByParent: selectedChildren.contains { CFEqual($0, child) })
         }
     }
 
@@ -1337,12 +1361,8 @@ func shouldContinueRendering(
     nextIndex < limits.maxNodeCount && depth < limits.maxDepth
 }
 
-private func summarizeTraits(of element: AXUIElement) -> [String] {
-    var values: [String] = []
-
-    if boolValue(of: element, attribute: kAXSelectedAttribute) == true {
-        values.append("selected")
-    }
+private func summarizeTraits(of element: AXUIElement, selection: TargetedSelectionState) -> [String] {
+    var values = selection.traits
 
     if boolValue(of: element, attribute: kAXExpandedAttribute) == true {
         values.append("expanded")
@@ -2617,6 +2637,8 @@ extension SnapshotBuilder {
         let expired = { ProcessInfo.processInfo.systemUptime >= deadline }
         var scans: [AXSearchNode: NodeScan] = [:]
         var records: [AXSearchNode: ElementRecord] = [:]
+        var selectedByParent: Set<AXSearchNode> = []
+        var selectionObservation = AXSelectionObservation<AXUIElement>.live()
         var textTruncated = false
         // 每个节点按其所在的可见范围判断：根为窗口范围；弹层（AXPopover）是独立显示的窗口，可伸出主窗口，
         // 它本身可见，其子树改按弹层范围判断。否则提醒事项详情弹层伸到主窗口外的控件会被当成不可见。
@@ -2626,7 +2648,8 @@ extension SnapshotBuilder {
         let result = try boundedTargetedWalk(root: root, maxNodes: criteria.maxNodes, limit: criteria.limit,
                                             expired: expired, inspect: { node in
             AXUIElementSetMessagingTimeout(node.element, 0.05)
-            let scan = batchScan(node.element)
+            var scan = batchScan(node.element)
+            scan.selectionState = scan.selectionState.includingParentMembership(selectedByParent.contains(node))
             guard scan.role != nil else { throw ComputerUseError.stateUnavailable("AX node could not be read") }
             scans[node] = scan
             let visibility = targetedNodeVisibility(
@@ -2657,6 +2680,12 @@ extension SnapshotBuilder {
                     throw ComputerUseError.stateUnavailable("AX children could not be read")
                 }
                 let children = elements.map { AXSearchNode(element: $0) }
+                if !expired() {
+                    let members = selectionObservation.selectedChildren(of: node.element, role: role)
+                    for child in children where members.contains(where: { CFEqual($0, child.element) }) {
+                        selectedByParent.insert(child)
+                    }
+                }
                 if let childClip = childClips[node] {
                     for child in children where clips[child] == nil { clips[child] = childClip }
                 }
@@ -2688,7 +2717,7 @@ extension SnapshotBuilder {
         let identifier: String?
         let help: String?
         let globalFrame: CGRect?
-        let selectionState: TargetedSelectionState
+        var selectionState: TargetedSelectionState
     }
 
     /// Read the scan attributes in a single `AXUIElementCopyMultipleAttributeValues`

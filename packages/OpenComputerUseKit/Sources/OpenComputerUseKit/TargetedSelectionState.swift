@@ -5,6 +5,8 @@ import Foundation
 struct TargetedSelectionState {
     var selected: Bool?
     var markCharacter: String?
+    private(set) var selectedByParent = false
+    private(set) var selectionConflict = false
 
     init(selected: AnyObject? = nil, markCharacter: AnyObject? = nil) {
         if let selected, CFGetTypeID(selected) == CFBooleanGetTypeID() {
@@ -14,8 +16,27 @@ struct TargetedSelectionState {
         self.markCharacter = (markCharacter as? String).map { String($0.prefix(1000)) }
     }
 
+    func includingParentMembership(_ isMember: Bool) -> Self {
+        guard isMember else { return self }
+        var result = self
+        result.selectedByParent = true
+        result.selectionConflict = selectionConflict || selected == false
+        result.selected = result.selectionConflict ? nil : true
+        return result
+    }
+
+    var traits: [String] {
+        if selectionConflict { return ["selection-conflict"] }
+        return selected == true ? ["selected"] : []
+    }
+
     func append(to dictionary: inout [String: Any]) {
         if let selected { dictionary["selected"] = selected }
         if let markCharacter { dictionary["mark_character"] = markCharacter }
+        if selectedByParent { dictionary["selection_sources"] = ["parent.AXSelectedChildren"] }
+        if selectionConflict {
+            dictionary["selection_conflict"] = true
+            dictionary["selected_attribute"] = false
+        }
     }
 }
