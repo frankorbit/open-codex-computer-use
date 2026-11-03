@@ -54,24 +54,6 @@ func skyMenuItemMatches(
     return cmdChar.uppercased() == equivalent.character && cmdModifiers == equivalent.modifiers
 }
 
-/// 查找可能跨多次 AX IPC；两种提交路径都必须在查找结束后复验接收者。
-func dispatchSkyMenuKey<Item>(
-    findMenuItem: () throws -> Item?,
-    validateReceiver: () throws -> Void,
-    pressMenuItem: (Item) throws -> Void,
-    postKey: () throws -> Void,
-) throws {
-    try validateReceiver()
-    let item = try findMenuItem()
-    try validateReceiver()
-    if let item {
-        // 一旦尝试 AXPress，任何错误都向上传递，不能换路重放。
-        try pressMenuItem(item)
-    } else {
-        try postKey()
-    }
-}
-
 /// 菜单仅是可选投递路径；独立窗口校验在查找后、输入前执行。
 func readSkyMenuAttribute(
     _ attribute: String,
@@ -179,6 +161,7 @@ enum SkyKeyboardDispatcher {
 
     static func pasteText(
         target: SkyKeyboardTarget, text: String,
+        route: SkyPasteRoute = .menuEquivalent,
         spi: SkyLightSPI = .shared, validateReceiver: () throws -> Void,
     ) throws {
         let parsed = try KeyPressParser.parse("super+v")
@@ -192,7 +175,8 @@ enum SkyKeyboardDispatcher {
                     }) { check, willSubmit in
                         try dispatchKey(
                             target: target, key: "super+v", parsed: parsed,
-                            validateReceiver: check, willSubmit: willSubmit
+                            validateReceiver: check, willSubmit: willSubmit,
+                            useMenuEquivalent: route == .menuEquivalent,
                         )
                     }
                 }
@@ -204,8 +188,10 @@ enum SkyKeyboardDispatcher {
         target: SkyKeyboardTarget, key: String, parsed: ParsedKeyPress,
         validateReceiver: () throws -> Void,
         willSubmit: () -> Void = {},
+        useMenuEquivalent: Bool = true,
     ) throws {
         try dispatchSkyMenuKey(
+            useMenuEquivalent: useMenuEquivalent,
             findMenuItem: {
                 guard let equivalent = skyMenuKeyEquivalent(for: parsed) else { return nil as AXUIElement? }
                 return try menuItem(matching: equivalent, pid: target.pid)
@@ -218,6 +204,7 @@ enum SkyKeyboardDispatcher {
                 )
             },
             pressMenuItem: { item in
+                InputDiagnostics.event("keyboard_submission", ["route": "menu_equivalent"])
                 willSubmit()
                 prepareAXInput(item)
                 let result = AXUIElementPerformAction(item, kAXPressAction as CFString)
@@ -229,7 +216,10 @@ enum SkyKeyboardDispatcher {
                 }
                 Thread.sleep(forTimeInterval: 0.1)
             },
-            postKey: { willSubmit(); try InputSimulation.pressKey(key, pid: target.pid) },
+            postKey: {
+                InputDiagnostics.event("keyboard_submission", ["route": "pid_key"])
+                willSubmit(); try InputSimulation.pressKey(key, pid: target.pid)
+            },
         )
     }
 
@@ -265,7 +255,7 @@ enum SkyKeyboardDispatcher {
             requireCapability: {
                 guard spi.capability.isAvailable else {
                     throw ComputerUseError.message(
-                        "key_method 'sky_key' is unavailable: \(spi.capability.unavailableReason)"
+                        "key_method 'sky_key' is unavailable: \(spi.capability.unavailableReason)",
                     )
                 }
             },
@@ -273,7 +263,7 @@ enum SkyKeyboardDispatcher {
             makeKey: { try spi.makeSyntheticTargetWindowKey($0) },
             waitForKey: { waitForKeyWindow($0, spi: spi) },
             releaseWait: { if releaseSettle > 0 { Thread.sleep(forTimeInterval: releaseSettle) } },
-            end: { try spi.endSyntheticTargetFocus($0) }
+            end: { try spi.endSyntheticTargetFocus($0) },
         )
     }
 

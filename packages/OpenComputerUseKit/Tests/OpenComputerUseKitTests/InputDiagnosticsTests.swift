@@ -1,4 +1,5 @@
 import Foundation
+import ApplicationServices
 @testable import OpenComputerUseKit
 import XCTest
 
@@ -16,6 +17,27 @@ private final class DiagnosticCollector: @unchecked Sendable {
 }
 
 final class InputDiagnosticsTests: XCTestCase {
+    func testKeyboardReceiverDiagnosticsExcludeAttributeValues() throws {
+        let collector = DiagnosticCollector()
+        let reader = KeyboardReceiverAXReader(now: { 0 }, setTimeout: { _, _ in .success }, copyValue: { _, _ in
+            (.success, "private-editor-value" as CFString)
+        })
+        _ = try InputDiagnostics.$observer.withValue({ collector.append($0) }) {
+            try InputDiagnostics.$operationID.withValue("receiver-diagnostic") {
+                try reader.value(AXUIElementCreateApplication(123), attribute: kAXRoleAttribute)
+            }
+        }
+        let record = try XCTUnwrap(collector.records.first)
+        XCTAssertEqual(collector.records.count, 1)
+        XCTAssertTrue(record.contains("keyboard_receiver_query"))
+        XCTAssertTrue(record.contains("AXRole"))
+        XCTAssertFalse(record.contains("private-editor-value"))
+        let fields = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(record.utf8)) as? [String: String])
+        XCTAssertEqual(fields["ax_result"], "0")
+        XCTAssertEqual(fields["restore_result"], "0")
+        XCTAssertEqual(fields["timeout_ms"], "2000.0")
+    }
+
     func testSingleForegroundFailuresPreserveStageAndSanitizedCauseWithoutReplay() throws {
         let stages: [ForegroundClickStage] = [.targetValidation, .activation, .receiverValidation, .submission]
         for (index, failedStage) in stages.enumerated() {
@@ -133,7 +155,7 @@ final class InputDiagnosticsTests: XCTestCase {
     }
 
     func testKeyboardFailuresIncludeDiagnosticsWithoutLoggingTextOrKeys() throws {
-        for name in ["type_text", "press_key"] {
+        for name in ["type_text", "press_key", "paste_text"] {
             let collector = DiagnosticCollector()
             let request: [String: Any] = [
                 "jsonrpc": "2.0", "id": 1, "method": "tools/call",

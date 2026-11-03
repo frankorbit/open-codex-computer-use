@@ -135,7 +135,10 @@ final class KeyboardReceiverTests: XCTestCase {
             typeText: { _, text, validate in try validate(); sent.append(text) },
             pressKey: { _, key, validate in try validate(); sent.append(key) },
             validateWindow: { _ in validations += 1 },
-            pasteText: { _, text, validate in try validate(); sent.append("paste:" + text) }
+            pasteText: { _, text, route, validate in
+                XCTAssertEqual(route, .menuEquivalent)
+                try validate(); sent.append("paste:" + text)
+            }
         )
         let service = ComputerUseService(snapshots: ["editor": snapshot()], keyboardInputBackend: backend)
         _ = try service.typeText(app: "editor", text: "Uber", keyMethod: .skyKey)
@@ -152,7 +155,7 @@ final class KeyboardReceiverTests: XCTestCase {
             typeText: { _, _, validate in try validate(); sends += 1 },
             pressKey: { _, _, validate in try validate(); sends += 1 },
             validateWindow: { _ in throw ComputerUseError.stateUnavailable("stale target") },
-            pasteText: { _, _, validate in try validate(); sends += 1 }
+            pasteText: { _, _, _, validate in try validate(); sends += 1 }
         )
         let service = ComputerUseService(snapshots: ["editor": snapshot()], keyboardInputBackend: backend)
         XCTAssertThrowsError(try service.typeText(app: "editor", text: "blocked", keyMethod: .skyKey))

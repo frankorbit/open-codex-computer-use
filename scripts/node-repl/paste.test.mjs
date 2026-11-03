@@ -38,3 +38,14 @@ test('unknown paste result is preserved with no automatic fallback or replay', a
   assert.equal(f.requests.filter(x => x.name === 'paste_text').length, 1);
   assert.equal(f.requests.length, 2);
 });
+
+test('Finder receiver rejection stays an error and never becomes typing or another paste', async () => {
+  const requests = [];
+  const api = createCuaApi({ request: async (_, params) => {
+    requests.push(params);
+    return { isError: true, content: [{ type: 'text', text: 'Keyboard receiver changed; no keys were sent.' }] };
+  } }, () => ({ write() {}, emitImage() {} }));
+  const app = await api.getApp('com.apple.finder', { initialState: false });
+  await assert.rejects(app.paste('归档测试'), /Keyboard receiver changed/);
+  assert.deepEqual(requests, [{ name: 'paste_text', arguments: { app: 'com.apple.finder', text: '归档测试' } }]);
+});

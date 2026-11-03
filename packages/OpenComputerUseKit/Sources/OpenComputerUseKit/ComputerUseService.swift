@@ -1294,14 +1294,23 @@ public final class ComputerUseService {
     }
 
     public func pasteText(app query: String, text: String) throws -> ToolCallResult {
+        try Task.checkCancellation()
         let snapshot = try currentSnapshot(for: query)
         guard snapshot.mode != .fixture else {
             throw ComputerUseError.message("paste_text is unavailable for fixture apps")
         }
         let target = try skyKeyTarget(for: snapshot)
         try keyboardInputBackend.validateWindow(snapshot)
-        try keyboardInputBackend.pasteText(target, text, {
+        // Finder 的文件列表也接受文本粘贴，但会创建 Text Clipping；必须绑定实时文本编辑者。
+        let route = SkyPasteRoute.forApplication(bundleIdentifier: snapshot.app.bundleIdentifier)
+        let receiver = try route == .focusedText ? keyboardInputBackend.readReceiver(snapshot, true) : nil
+        InputDiagnostics.event("paste_receiver_prepared", ["route": route.rawValue])
+        try keyboardInputBackend.pasteText(target, text, route, {
+            try Task.checkCancellation()
             try keyboardInputBackend.validateWindow(snapshot)
+            if let receiver {
+                try requireSameKeyboardReceiver(receiver, current: keyboardInputBackend.readReceiver(snapshot, true))
+            }
         })
         return try actionResult(for: query)
     }

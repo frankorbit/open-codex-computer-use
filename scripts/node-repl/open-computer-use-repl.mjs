@@ -46,7 +46,7 @@ The runtime exposes an asynchronous app-bound API:
 - \`await app.scroll(elementIndex, direction, pages?)\`
 - \`await app.drag([fromX, fromY], [toX, toY])\`
 - \`await app.typeText(text, { keyMethod? })\`
-- \`await app.paste(text, { format?: "text" })\` (macOS plain text; leaves pasted text in the clipboard after submission)
+- \`await app.paste(text, { format?: "text" })\` (macOS plain text; leaves pasted text in the clipboard after submission; Finder requires a stable live focused editable AX element and never uses the file-list Paste menu)
 - \`await app.pressKey(key, { keyMethod? })\`
 - \`await app.setValue(elementIndex, value)\`
 - \`await app.performSecondaryAction(elementIndex, action)\`

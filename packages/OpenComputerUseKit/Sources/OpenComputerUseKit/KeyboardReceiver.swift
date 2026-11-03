@@ -41,25 +41,28 @@ enum KeyboardReceiver {
         else {
             throw unavailable("Keyboard target window is stale or hidden")
         }
+        let reader = KeyboardReceiverAXReader()
         let app = AXUIElementCreateApplication(snapshot.app.pid)
-        let focusedWindow = try element(app, attribute: kAXFocusedWindowAttribute)
+        let focusedWindow = try reader.element(app, attribute: kAXFocusedWindowAttribute)
         try requireSameKeyboardReceiver(window, current: focusedWindow)
         guard requireEditable else { return focusedWindow }
 
-        let focused = try element(app, attribute: kAXFocusedUIElementAttribute)
+        let focused = try reader.element(app, attribute: kAXFocusedUIElementAttribute)
         var owner: pid_t = 0
         guard AXUIElementGetPid(focused, &owner) == .success, owner == snapshot.app.pid else {
             throw unavailable("Focused input belongs to another process")
         }
-        let inputWindow = try element(focused, attribute: kAXWindowAttribute)
+        let inputWindow = try reader.element(focused, attribute: kAXWindowAttribute)
         try requireSameKeyboardReceiver(window, current: inputWindow)
-        let role = try optionalAttribute(focused, name: kAXRoleAttribute) as? String
-        let description = try optionalAttribute(focused, name: kAXRoleDescriptionAttribute) as? String
-        let enabled = try (optionalAttribute(focused, name: kAXEnabledAttribute) as? NSNumber)?.boolValue
-        let editable = try (optionalAttribute(focused, name: "AXEditable") as? NSNumber)?.boolValue
-        let readOnly = try (optionalAttribute(focused, name: "AXReadOnly") as? NSNumber)?.boolValue
+        let role = try reader.value(focused, attribute: kAXRoleAttribute) as? String
+        let description = try reader.value(focused, attribute: kAXRoleDescriptionAttribute) as? String
+        let enabled = try (reader.value(focused, attribute: kAXEnabledAttribute) as? NSNumber)?.boolValue
+        let editable = try (reader.value(focused, attribute: "AXEditable") as? NSNumber)?.boolValue
+        let readOnly = try (reader.value(focused, attribute: "AXReadOnly") as? NSNumber)?.boolValue
         var settable = DarwinBoolean(false)
-        let result = AXUIElementIsAttributeSettable(focused, kAXValueAttribute as CFString, &settable)
+        let result = try reader.query(focused, attribute: kAXValueAttribute, operation: "settable") {
+            AXUIElementIsAttributeSettable(focused, kAXValueAttribute as CFString, &settable)
+        }
         guard result == .success || result == .attributeUnsupported || result == .noValue else {
             throw unavailable("Live editable capability query failed (\(result.rawValue))")
         }
@@ -68,27 +71,6 @@ enum KeyboardReceiver {
             editable: editable, readOnly: readOnly, valueSettable: result == .success && settable.boolValue
         )
         return focused
-    }
-
-    private static func element(_ source: AXUIElement, attribute: String) throws -> AXUIElement {
-        guard let value = try optionalAttribute(source, name: attribute),
-              CFGetTypeID(value) == AXUIElementGetTypeID()
-        else {
-            throw unavailable("No live \(attribute) is available")
-        }
-        // 上面已验证 CF 类型，AX 属性返回值可以转换为对应元素。
-        // swiftlint:disable:next force_cast
-        return value as! AXUIElement
-    }
-
-    private static func optionalAttribute(_ source: AXUIElement, name: String) throws -> CFTypeRef? {
-        var value: CFTypeRef?
-        let result = AXUIElementCopyAttributeValue(source, name as CFString, &value)
-        switch result {
-        case .success: return value
-        case .noValue, .attributeUnsupported: return nil
-        default: throw unavailable("Live keyboard receiver query failed (\(result.rawValue))")
-        }
     }
 
     private static func unavailable(_ reason: String) -> ComputerUseError {
@@ -114,7 +96,7 @@ func validateEditableKeyboardReceiver(
     guard enabled != false, editable != false, readOnly != true, textRole || editableCombo
     else {
         throw ComputerUseError.stateUnavailable(
-            "type_text requires a live focused editable text element. "
+            "Text input requires a live focused editable text element. "
                 + "Click a text entry area first; no text was sent."
         )
     }
@@ -128,13 +110,15 @@ func focusedElementSummary(rendered: String?, role: String?, hasFocusedElement: 
 }
 
 struct KeyboardInputBackend {
+    typealias Paste = (SkyKeyboardTarget, String, SkyPasteRoute, () throws -> Void) throws -> Void
+
     var readReceiver: (AppSnapshot, Bool) throws -> AXUIElement
     var typeText: (SkyKeyboardTarget, String, () throws -> Void) throws -> Void
     var pressKey: (SkyKeyboardTarget, String, () throws -> Void) throws -> Void
 
     var validateWindow: (AppSnapshot) throws -> Void = { try KeyboardReceiver.validateWindow(in: $0) }
-    var pasteText: (SkyKeyboardTarget, String, () throws -> Void) throws -> Void = { target, text, validate in
-        try SkyKeyboardDispatcher.pasteText(target: target, text: text, validateReceiver: validate)
+    var pasteText: Paste = { target, text, route, validate in
+        try SkyKeyboardDispatcher.pasteText(target: target, text: text, route: route, validateReceiver: validate)
     }
 
     static var live: KeyboardInputBackend {

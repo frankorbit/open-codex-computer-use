@@ -174,7 +174,12 @@ public enum ToolDefinitions {
         ),
         ToolDefinition(
             name: "paste_text",
-            description: "Paste plain text into a visually verified editor using background sky_key. Does not require AX text focus. Writes plain text to the system clipboard and leaves it there after submission so asynchronous paste cannot read restored old data. Only pre-submission failures restore prior contents when still owned. Observe after input; never retry an unknown result.",
+            description: "Paste plain text into a visually verified editor using background sky_key. "
+                + "Finder requires the same live focused editable AX element before and during delivery; "
+                + "it uses text-editor key delivery, not the file-list Paste menu. Other apps do not require AX text focus. "
+                + "Writes plain text to the system clipboard and leaves it there after submission so asynchronous paste "
+                + "cannot read restored old data. Only pre-submission failures restore prior contents when still owned. "
+                + "Observe after input; never retry an unknown result.",
             annotations: defaultAnnotations(),
             inputSchema: objectSchema(
                 properties: [

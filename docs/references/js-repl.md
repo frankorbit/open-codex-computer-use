@@ -50,8 +50,16 @@ pressKey(key, options?)
 scroll(elementIndex, direction, pages?)
 setValue(elementIndex, value)
 typeText(text, options?)
+paste(text, { format?: "text" })
 performSecondaryAction(elementIndex, action)
 ```
+
+On macOS, `paste` leaves plain text in the clipboard after submission. Finder
+requires a live focused editable AX element that remains the same through input
+preparation and submission; its text paste does not invoke the file-list Paste
+menu. A selected file row or cached selected-text summary is not sufficient.
+Other applications retain the visually verified editor path without requiring
+AX text focus. Observe after input; never replay an unknown result.
 
 On macOS, observation methods also accept optional `includeAX` and
 `includeScreenshot` booleans, both defaulting to true. Use
